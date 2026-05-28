@@ -3,9 +3,6 @@ name: Bump submodule in papolo-bot
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
 
 jobs:
   bump:
