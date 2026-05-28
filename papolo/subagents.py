@@ -1,11 +1,15 @@
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 import json
+import os
 import yaml
 
 from .deepseek import get_client, model_name
 from .tools import TOOL_SCHEMAS, DISPATCH
+from .skills import SKILL_TOOL_SCHEMA, skill_tool_dispatch
 
 SUBAGENTS_DIR = Path(__file__).resolve().parent.parent / "subagents"
+MAX_PARALLEL_TOOL_CALLS = int(os.environ.get("PAPOLO_MAX_PARALLEL", "8"))
 
 
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
@@ -52,7 +56,7 @@ SUBAGENT_TOOL_SCHEMA = {
     "type": "function",
     "function": {
         "name": "spawn_subagent",
-        "description": "Crea un subagente especializado con su propio contexto. Util para tareas focalizadas o para no contaminar el contexto principal.",
+        "description": "Crea un subagente especializado con su propio contexto. Util para tareas focalizadas o para no contaminar el contexto principal. Podes invocar varios spawn_subagent en una misma respuesta y corren en paralelo.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -65,6 +69,14 @@ SUBAGENT_TOOL_SCHEMA = {
 }
 
 
+def _sub_dispatch(name: str, args: dict) -> str:
+    if name == "load_skill":
+        return skill_tool_dispatch(**args)
+    if name in DISPATCH:
+        return DISPATCH[name](**args)
+    return f"Tool desconocida: {name}"
+
+
 def spawn_subagent(name: str, task: str, max_iters: int = 15) -> str:
     md_path = SUBAGENTS_DIR / f"{name}.md"
     if not md_path.exists():
@@ -74,6 +86,7 @@ def spawn_subagent(name: str, task: str, max_iters: int = 15) -> str:
     sub_model = meta.get("model", model_name())
 
     client = get_client()
+    tools = TOOL_SCHEMAS + [SKILL_TOOL_SCHEMA]
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": task},
@@ -83,7 +96,7 @@ def spawn_subagent(name: str, task: str, max_iters: int = 15) -> str:
         resp = client.chat.completions.create(
             model=sub_model,
             messages=messages,
-            tools=TOOL_SCHEMAS,
+            tools=tools,
         )
         msg = resp.choices[0].message
         messages.append(msg.model_dump(exclude_none=True))
@@ -91,12 +104,19 @@ def spawn_subagent(name: str, task: str, max_iters: int = 15) -> str:
         if not msg.tool_calls:
             return msg.content or ""
 
-        for call in msg.tool_calls:
+        def run_call(call):
             args = json.loads(call.function.arguments or "{}")
             try:
-                result = DISPATCH[call.function.name](**args)
+                result = _sub_dispatch(call.function.name, args)
             except Exception as e:
                 result = f"ERROR: {e}"
+            return call, result
+
+        workers = min(len(msg.tool_calls), MAX_PARALLEL_TOOL_CALLS)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(run_call, msg.tool_calls))
+
+        for call, result in results:
             messages.append({
                 "role": "tool",
                 "tool_call_id": call.id,
