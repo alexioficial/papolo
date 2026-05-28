@@ -1,0 +1,37 @@
+name: Bump submodule in papolo-bot
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout papolo-bot
+        uses: actions/checkout@v4
+        with:
+          repository: alexioficial/papolo-bot
+          token: ${{ secrets.BOT_REPO_TOKEN }}
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Update submodule to latest papolo
+        run: |
+          git submodule update --remote vendor/papolo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit and push if changed
+        run: |
+          if git diff --quiet; then
+            echo "No changes - submodule already up to date"
+            exit 0
+          fi
+          SHA=$(git -C vendor/papolo rev-parse --short HEAD)
+          git add vendor/papolo
+          git commit -m "chore: bump papolo submodule to ${SHA}"
+          git push
