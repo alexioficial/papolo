@@ -3,6 +3,7 @@ import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .deepseek import get_client, model_name
 from .tools import TOOL_SCHEMAS, DISPATCH
@@ -26,9 +27,27 @@ Reglas:
 - Usa las skills cuando el trigger aplica. Cargalas con load_skill antes de actuar.
 - Delega en subagentes cuando la tarea es focalizada o pesada en contexto.
 - Cuando tengas varias acciones independientes (varias lecturas, varios subagentes, varios shell), emitilas como multiples tool_calls en la MISMA respuesta. Se ejecutan en paralelo. Solo serializa cuando una depende del resultado de otra.
+- Usa git para tus cambios: antes de modificaciones riesgosas commiteas (`git add -A && git commit -m '...'`), asi podes revertir con `git reset --hard HEAD~1` si algo sale mal. Brancheas con `git checkout -b experimento` cuando explores.
 - Se directo y breve. Solo escribe codigo cuando te lo piden.
 
 {extra}""".strip()
+
+
+def _resolve_path_args(name: str, args: dict, workspace_dir: str | None) -> dict:
+    if not workspace_dir:
+        return args
+    args = dict(args)
+    if name in ("read_file", "write_file", "list_dir") and "path" in args:
+        p = Path(args["path"])
+        if not p.is_absolute():
+            args["path"] = str(Path(workspace_dir) / p)
+    elif name == "shell":
+        cwd = args.get("cwd")
+        if not cwd:
+            args["cwd"] = workspace_dir
+        elif not Path(cwd).is_absolute():
+            args["cwd"] = str(Path(workspace_dir) / cwd)
+    return args
 
 
 @dataclass
@@ -37,9 +56,21 @@ class Agent:
     model: str = field(default_factory=model_name)
     max_iters: int = field(default_factory=lambda: int(os.environ.get("PAPOLO_MAX_ITERS", "25")))
     messages: list = field(default_factory=list)
+    workspace_dir: str | None = None
 
     def __post_init__(self):
+        if self.workspace_dir:
+            self.workspace_dir = str(Path(self.workspace_dir).resolve())
+
         sys_prompt = self.system_prompt or build_system_prompt()
+        if self.workspace_dir:
+            sys_prompt += (
+                f"\n\nWorkspace: tu directorio de trabajo aislado es `{self.workspace_dir}` "
+                f"(ya tiene `git init` hecho). Todos los read_file/write_file/list_dir con paths "
+                f"relativos resuelven ahi. `shell` sin cwd corre ahi. Trabaja siempre dentro de este "
+                f"directorio salvo que necesites algo afuera explicitamente."
+            )
+
         if not self.messages:
             self.messages.append({"role": "system", "content": sys_prompt})
 
@@ -47,10 +78,16 @@ class Agent:
         return TOOL_SCHEMAS + [SKILL_TOOL_SCHEMA, SUBAGENT_TOOL_SCHEMA]
 
     def _dispatch(self, name: str, args: dict) -> str:
+        args = _resolve_path_args(name, args, self.workspace_dir)
         if name == "load_skill":
             return skill_tool_dispatch(**args)
         if name == "spawn_subagent":
-            return spawn_subagent(**args)
+            return spawn_subagent(
+                name=args.get("name"),
+                task=args.get("task"),
+                depth=1,
+                workspace_dir=self.workspace_dir,
+            )
         if name in DISPATCH:
             return DISPATCH[name](**args)
         return f"Tool desconocida: {name}"

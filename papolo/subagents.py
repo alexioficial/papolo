@@ -10,6 +10,7 @@ from .skills import SKILL_TOOL_SCHEMA, skill_tool_dispatch
 
 SUBAGENTS_DIR = Path(__file__).resolve().parent.parent / "subagents"
 MAX_PARALLEL_TOOL_CALLS = int(os.environ.get("PAPOLO_MAX_PARALLEL", "8"))
+MAX_SUBAGENT_DEPTH = int(os.environ.get("PAPOLO_MAX_DEPTH", "3"))
 
 
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
@@ -56,7 +57,12 @@ SUBAGENT_TOOL_SCHEMA = {
     "type": "function",
     "function": {
         "name": "spawn_subagent",
-        "description": "Crea un subagente especializado con su propio contexto. Util para tareas focalizadas o para no contaminar el contexto principal. Podes invocar varios spawn_subagent en una misma respuesta y corren en paralelo.",
+        "description": (
+            "Crea un subagente especializado con su propio contexto. Util para tareas focalizadas o "
+            "para no contaminar el contexto principal. Podes invocar varios spawn_subagent en una "
+            "misma respuesta y corren en paralelo. Los subagentes pueden a su vez spawnear mas "
+            f"subagentes hasta una profundidad maxima de {MAX_SUBAGENT_DEPTH}."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -69,15 +75,36 @@ SUBAGENT_TOOL_SCHEMA = {
 }
 
 
-def _sub_dispatch(name: str, args: dict) -> str:
-    if name == "load_skill":
-        return skill_tool_dispatch(**args)
-    if name in DISPATCH:
-        return DISPATCH[name](**args)
-    return f"Tool desconocida: {name}"
+def _resolve_path_args(name: str, args: dict, workspace_dir: str | None) -> dict:
+    if not workspace_dir:
+        return args
+    args = dict(args)
+    if name in ("read_file", "write_file", "list_dir") and "path" in args:
+        p = Path(args["path"])
+        if not p.is_absolute():
+            args["path"] = str(Path(workspace_dir) / p)
+    elif name == "shell":
+        cwd = args.get("cwd")
+        if not cwd:
+            args["cwd"] = workspace_dir
+        elif not Path(cwd).is_absolute():
+            args["cwd"] = str(Path(workspace_dir) / cwd)
+    return args
 
 
-def spawn_subagent(name: str, task: str, max_iters: int = 15) -> str:
+def spawn_subagent(
+    name: str,
+    task: str,
+    max_iters: int = 15,
+    depth: int = 1,
+    workspace_dir: str | None = None,
+) -> str:
+    if depth > MAX_SUBAGENT_DEPTH:
+        return (
+            f"ERROR: limite de profundidad de subagentes ({MAX_SUBAGENT_DEPTH}) alcanzado. "
+            "Resolve la tarea con las tools directas en lugar de spawnear mas subagentes."
+        )
+
     md_path = SUBAGENTS_DIR / f"{name}.md"
     if not md_path.exists():
         return f"Subagente '{name}' no encontrado"
@@ -85,12 +112,34 @@ def spawn_subagent(name: str, task: str, max_iters: int = 15) -> str:
     meta, system_prompt = _parse_frontmatter(md_path.read_text(encoding="utf-8"))
     sub_model = meta.get("model", model_name())
 
+    if workspace_dir:
+        system_prompt += (
+            f"\n\nWorkspace asignado: `{workspace_dir}` (ya tiene `git init` hecho). "
+            f"Paths relativos resuelven ahi. `shell` sin cwd corre ahi. "
+            f"Usa git commit antes de cambios riesgosos para poder revertir."
+        )
+
     client = get_client()
-    tools = TOOL_SCHEMAS + [SKILL_TOOL_SCHEMA]
+    tools = TOOL_SCHEMAS + [SKILL_TOOL_SCHEMA, SUBAGENT_TOOL_SCHEMA]
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": task},
     ]
+
+    def sub_dispatch(tname: str, targs: dict) -> str:
+        targs = _resolve_path_args(tname, targs, workspace_dir)
+        if tname == "load_skill":
+            return skill_tool_dispatch(**targs)
+        if tname == "spawn_subagent":
+            return spawn_subagent(
+                name=targs.get("name"),
+                task=targs.get("task"),
+                depth=depth + 1,
+                workspace_dir=workspace_dir,
+            )
+        if tname in DISPATCH:
+            return DISPATCH[tname](**targs)
+        return f"Tool desconocida: {tname}"
 
     for _ in range(max_iters):
         resp = client.chat.completions.create(
@@ -107,7 +156,7 @@ def spawn_subagent(name: str, task: str, max_iters: int = 15) -> str:
         def run_call(call):
             args = json.loads(call.function.arguments or "{}")
             try:
-                result = _sub_dispatch(call.function.name, args)
+                result = sub_dispatch(call.function.name, args)
             except Exception as e:
                 result = f"ERROR: {e}"
             return call, result
