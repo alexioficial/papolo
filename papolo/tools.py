@@ -1,5 +1,32 @@
+import os
 import subprocess
 from pathlib import Path
+
+# Env vars que el shell tool puede ver. Cualquier otra cosa
+# (especialmente secrets: tokens GitHub, Coolify, Discord, DeepSeek) se filtra
+# para que un prompt injection no pueda exfiltrarlos.
+_SHELL_ENV_ALLOW = {
+    "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "LC_CTYPE",
+    "TERM", "TZ", "PWD", "HOSTNAME",
+    "NODE_ENV", "NPM_CONFIG_CACHE", "PNPM_HOME",
+    "CARGO_HOME", "RUSTUP_HOME",
+    "UV_CACHE_DIR", "PIP_CACHE_DIR",
+    "PAPOLO_WORKSPACE_ROOT",
+}
+_SHELL_ENV_BLOCK_PREFIXES = (
+    "PAPOLO_GITHUB_", "COOLIFY_", "DISCORD_", "DEEPSEEK_",
+    "OPENAI_", "ANTHROPIC_",
+)
+
+
+def _safe_shell_env() -> dict:
+    out = {}
+    for k, v in os.environ.items():
+        if any(k.startswith(p) for p in _SHELL_ENV_BLOCK_PREFIXES):
+            continue
+        if k in _SHELL_ENV_ALLOW or k.startswith(("XDG_", "GIT_")):
+            out[k] = v
+    return out
 
 TOOL_SCHEMAS = [
     {
@@ -90,6 +117,7 @@ def shell(command: str, cwd: str | None = None) -> str:
         text=True,
         cwd=cwd,
         timeout=120,
+        env=_safe_shell_env(),
     )
     return f"exit_code: {r.returncode}\n--- stdout ---\n{r.stdout}\n--- stderr ---\n{r.stderr}"
 

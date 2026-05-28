@@ -7,6 +7,7 @@ import yaml
 from .deepseek import get_client, model_name
 from .tools import TOOL_SCHEMAS, DISPATCH
 from .skills import SKILL_TOOL_SCHEMA, skill_tool_dispatch
+from .deploy import DEPLOY_TOOL_SCHEMAS, DEPLOY_DISPATCH
 
 SUBAGENTS_DIR = Path(__file__).resolve().parent.parent / "subagents"
 MAX_PARALLEL_TOOL_CALLS = int(os.environ.get("PAPOLO_MAX_PARALLEL", "8"))
@@ -98,6 +99,7 @@ def spawn_subagent(
     max_iters: int = 15,
     depth: int = 1,
     workspace_dir: str | None = None,
+    conversation_uuid: str | None = None,
 ) -> str:
     if depth > MAX_SUBAGENT_DEPTH:
         return (
@@ -120,7 +122,7 @@ def spawn_subagent(
         )
 
     client = get_client()
-    tools = TOOL_SCHEMAS + [SKILL_TOOL_SCHEMA, SUBAGENT_TOOL_SCHEMA]
+    tools = TOOL_SCHEMAS + [SKILL_TOOL_SCHEMA, SUBAGENT_TOOL_SCHEMA] + DEPLOY_TOOL_SCHEMAS
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": task},
@@ -136,6 +138,13 @@ def spawn_subagent(
                 task=targs.get("task"),
                 depth=depth + 1,
                 workspace_dir=workspace_dir,
+                conversation_uuid=conversation_uuid,
+            )
+        if tname in DEPLOY_DISPATCH:
+            return DEPLOY_DISPATCH[tname](
+                workspace_dir=workspace_dir,
+                conversation_uuid=conversation_uuid,
+                **targs,
             )
         if tname in DISPATCH:
             return DISPATCH[tname](**targs)

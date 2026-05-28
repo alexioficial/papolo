@@ -9,12 +9,14 @@ from .deepseek import get_client, model_name
 from .tools import TOOL_SCHEMAS, DISPATCH
 from .skills import SKILL_TOOL_SCHEMA, skill_tool_dispatch, skills_index_for_prompt
 from .subagents import SUBAGENT_TOOL_SCHEMA, spawn_subagent, subagents_index_for_prompt
+from .deploy import DEPLOY_TOOL_SCHEMAS, DEPLOY_DISPATCH, deploy_index_for_prompt
 
 
 MAX_PARALLEL_TOOL_CALLS = int(os.environ.get("PAPOLO_MAX_PARALLEL", "8"))
 
 
 def build_system_prompt(extra: str = "") -> str:
+    deploy_block = deploy_index_for_prompt()
     return f"""Papolo, un agente de IA que ayuda con tareas de software y mas.
 
 Tenes acceso a herramientas para leer/escribir archivos, ejecutar shell, cargar skills y spawnear subagentes.
@@ -23,11 +25,14 @@ Tenes acceso a herramientas para leer/escribir archivos, ejecutar shell, cargar 
 
 {skills_index_for_prompt()}
 
+{deploy_block}
+
 Reglas:
 - Usa las skills cuando el trigger aplica. Cargalas con load_skill antes de actuar.
 - Delega en subagentes cuando la tarea es focalizada o pesada en contexto.
 - Cuando tengas varias acciones independientes (varias lecturas, varios subagentes, varios shell), emitilas como multiples tool_calls en la MISMA respuesta. Se ejecutan en paralelo. Solo serializa cuando una depende del resultado de otra.
 - Usa git para tus cambios: antes de modificaciones riesgosas commiteas (`git add -A && git commit -m '...'`), asi podes revertir con `git reset --hard HEAD~1` si algo sale mal. Brancheas con `git checkout -b experimento` cuando explores.
+- Para web/python apps tenes node, pnpm, python, uv, cargo disponibles en el shell. Antes de deployar, valida que builda local.
 - Se directo y breve. Solo escribe codigo cuando te lo piden.
 
 {extra}""".strip()
@@ -57,6 +62,7 @@ class Agent:
     max_iters: int = field(default_factory=lambda: int(os.environ.get("PAPOLO_MAX_ITERS", "25")))
     messages: list = field(default_factory=list)
     workspace_dir: str | None = None
+    conversation_uuid: str | None = None
 
     def __post_init__(self):
         if self.workspace_dir:
@@ -75,7 +81,7 @@ class Agent:
             self.messages.append({"role": "system", "content": sys_prompt})
 
     def all_tools(self):
-        return TOOL_SCHEMAS + [SKILL_TOOL_SCHEMA, SUBAGENT_TOOL_SCHEMA]
+        return TOOL_SCHEMAS + [SKILL_TOOL_SCHEMA, SUBAGENT_TOOL_SCHEMA] + DEPLOY_TOOL_SCHEMAS
 
     def _dispatch(self, name: str, args: dict) -> str:
         args = _resolve_path_args(name, args, self.workspace_dir)
@@ -87,6 +93,13 @@ class Agent:
                 task=args.get("task"),
                 depth=1,
                 workspace_dir=self.workspace_dir,
+                conversation_uuid=self.conversation_uuid,
+            )
+        if name in DEPLOY_DISPATCH:
+            return DEPLOY_DISPATCH[name](
+                workspace_dir=self.workspace_dir,
+                conversation_uuid=self.conversation_uuid,
+                **args,
             )
         if name in DISPATCH:
             return DISPATCH[name](**args)
