@@ -10,6 +10,7 @@ from .tools import TOOL_SCHEMAS, DISPATCH
 from .skills import SKILL_TOOL_SCHEMA, skill_tool_dispatch, skills_index_for_prompt
 from .subagents import SUBAGENT_TOOL_SCHEMA, spawn_subagent, subagents_index_for_prompt
 from .deploy import DEPLOY_TOOL_SCHEMAS, DEPLOY_DISPATCH, deploy_index_for_prompt
+from .pipeline import PipelineTracker
 
 
 MAX_PARALLEL_TOOL_CALLS = int(os.environ.get("PAPOLO_MAX_PARALLEL", "8"))
@@ -61,7 +62,7 @@ Formato de respuesta al usuario (NO NEGOCIABLE):
 Regla de calidad (NO NEGOCIABLE):
 - Antes del primer build/deploy de cualquier proyecto nuevo: carga `production-quality` y corre su checklist completo. NO buildes ni deployes si el checklist tiene FAILS.
 - Si ves "Welcome to SvelteKit", "Edit this file", "Dashboard works!", "Get started", "Visit kit.svelte.dev" o cualquier template default en el codigo — BORRALO y ESCRIBI el contenido real del sistema. Ese es el error #1 de Papolo.
-- Si la pagina se ve en blanco post-deploy: probablemente falta `{@render children()}` en layout o falta `import '../app.css'` para Tailwind 4. Fixea y redeploy. NO asumas que es otro error — verifica estos dos primero.
+- Si la pagina se ve en blanco post-deploy: probablemente falta `{{@render children()}}` en layout o falta `import '../app.css'` para Tailwind 4. Fixea y redeploy. NO asumas que es otro error — verifica estos dos primero.
 - Nunca dejes `TODO`, `FIXME`, `placeholder`, `Lorem ipsum`, codigo comentado ni implementaciones a medio hacer en archivos que se buildear.
 - Cada ruta raiz (`/`) debe tener contenido real del sistema. No existe el concepto de "pagina de bienvenida" en sistemas de produccion.
 
@@ -99,6 +100,8 @@ class Agent:
     def __post_init__(self):
         if self.workspace_dir:
             self.workspace_dir = str(Path(self.workspace_dir).resolve())
+
+        self.pipeline = PipelineTracker(self.workspace_dir)
 
         sys_prompt = self.system_prompt or build_system_prompt()
         if self.workspace_dir:
@@ -151,12 +154,38 @@ class Agent:
 
     def _dispatch(self, name: str, args: dict, on_event=None) -> str:
         args = _resolve_path_args(name, args, self.workspace_dir)
+
+        # Pipeline block check: build/deploy sin pasar quality check
+        block = self.pipeline.should_block(name, args)
+        if block:
+            return block
+
         if name == "load_skill":
             return skill_tool_dispatch(**args)
         if name == "spawn_subagent":
+            sub_name = args.get("name", "")
+            task = args.get("task", "")
+
+            # Pipeline: inyeccion de skills faltantes
+            missing = self.pipeline.missing_skills_for_subagent(sub_name)
+            if missing:
+                results = []
+                for s in missing:
+                    content = skill_tool_dispatch(name=s)
+                    self.pipeline.record_result(
+                        "load_skill", json.dumps({"name": s}), content
+                    )
+                    results.append(
+                        f"[PIPELINE] Skill '{s}' cargada:\n\n{content}"
+                    )
+                return "\n\n---\n\n".join(results)
+
+            # Pipeline: enriquecer task con plan del arquitecto
+            task = self.pipeline.enrich_task(task)
+
             return spawn_subagent(
-                name=args.get("name"),
-                task=args.get("task"),
+                name=sub_name,
+                task=task,
                 depth=1,
                 workspace_dir=self.workspace_dir,
                 conversation_uuid=self.conversation_uuid,
@@ -174,6 +203,7 @@ class Agent:
 
     def send(self, user_message: str, on_event=None) -> str:
         self.messages.append({"role": "user", "content": user_message})
+        self.pipeline.detect_project_type(user_message)
         client = get_client()
         event_lock = threading.Lock()
 
@@ -217,6 +247,7 @@ class Agent:
                 safe_event("final", {"content": final})
                 return final
 
+            # Pipeline: trackear resultados despues de cada call
             def run_call(call):
                 args = json.loads(call.function.arguments or "{}")
                 safe_event("tool_call", {"name": call.function.name, "args": args})
@@ -225,6 +256,8 @@ class Agent:
                 except Exception as e:
                     result = f"ERROR: {e}"
                 safe_event("tool_result", {"name": call.function.name, "result": str(result)[:300]})
+                # Pipeline: trackear resultado para estado
+                self.pipeline.record_result(call.function.name, call.function.arguments or "{}", result)
                 return call, result
 
             workers = min(len(msg.tool_calls), MAX_PARALLEL_TOOL_CALLS)
