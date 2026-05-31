@@ -454,6 +454,9 @@ def deploy_index_for_prompt() -> str:
     return (
         "Capacidades de deploy disponibles:\n- "
         + "\n- ".join(parts)
-        + "\nAntes de deployar web apps, verifica que builda local "
-          "('pnpm build', 'npm run build', etc) en el workspace."
+        + "\nReglas criticas de deploy (no negociables):\n"
+        + "- ANTES de tu primer coolify_create_app: SIEMPRE carga la skill 'coolify-deploy' con load_skill. Ahi estan los templates de Dockerfile por stack y el procedimiento exacto.\n"
+        + "- Para CUALQUIER stack, siempre build_pack=\"dockerfile\". Nunca nixpacks, nunca docker-compose. Escribi un Dockerfile a mano en el workspace.\n"
+        + "- Cuando coolify_status devuelva status que empiece con 'running' (incluyendo 'running:unknown'): PARA. Reporta el preview URL al usuario y termina la tarea. NO destruyas ni reescribas la app.\n"
+        + "- coolify_destroy_app solo se usa si el usuario lo pide explicitamente. Un deploy fallido NO es razon para destruir — fixea y haz coolify_deploy denuevo."
     )

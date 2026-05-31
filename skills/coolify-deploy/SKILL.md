@@ -1,166 +1,215 @@
 ---
 name: coolify-deploy
-description: Como deployar un proyecto a Coolify con las tools de deploy. Define que build_pack usar segun el stack (Python/Rust/Go -> Dockerfile obligatorio, NUNCA docker-compose; SvelteKit/Node -> adapter-node + nixpacks). Cargala antes de llamar coolify_create_app por primera vez en una tarea de deploy.
+description: Como deployar un proyecto a Coolify. REGLA UNICA: siempre Dockerfile, NUNCA nixpacks ni docker-compose. Incluye templates Dockerfile por stack (SvelteKit, Python, Rust, Go, static). Cargala antes de llamar coolify_create_app.
 ---
 
 # Skill: coolify-deploy
 
+## REGLA NRO 1 (no negociable)
+**Siempre `build_pack="dockerfile"`.** Nunca nixpacks. Nunca docker-compose. Sin excepciones, incluso para Node/SvelteKit.
+
+Razon: nixpacks adivina el start command y a veces le erra; docker-compose en Coolify trae problemas conocidos. Dockerfile escrito a mano es 100% deterministico.
+
 ## Cuando usarla
 - Vas a llamar `coolify_create_app` por primera vez
 - El usuario pide "deployalo", "subilo a coolify", "haceme un preview", etc
-- Necesitas preparar un proyecto para producir un container que arranque ok
 
-## Cuando NO usarla
-- Solo vas a hacer `coolify_status` o `coolify_set_env` sobre una app ya existente (no necesitas re-preparar el repo)
-- El usuario solo pidio scaffolding sin deploy
+## Procedimiento general
+1. Identifica el stack del proyecto.
+2. **Escribi `Dockerfile`** en el workspace usando el template correspondiente abajo.
+3. **Escribi `.dockerignore`** para no copiar basura.
+4. **Validar** que el build funciona localmente (`docker build` si tenes docker disponible — sino al menos `pnpm build` / `cargo build --release` / etc).
+5. `github_create_repo` + `github_push_workspace`.
+6. `coolify_create_app(repo_url=..., port=<puerto del CMD>, build_pack="dockerfile")`.
+7. Si necesitas env vars: `coolify_set_env` antes del primer deploy.
+8. `coolify_deploy(app_uuid)`.
+9. **Loop de status** (ver mas abajo) hasta que sea `running` o `failed`.
+10. Si `running`: REPORTAR EL URL al usuario y PARAR.
 
-## Reglas absolutas
+## Templates Dockerfile
 
-| Stack | build_pack | Notas |
-|---|---|---|
-| **Python** (FastAPI, scripts, etc) | **`dockerfile`** | Escribi un Dockerfile a mano. NUNCA docker-compose. |
-| **Rust** (Actix, Axum, etc) | **`dockerfile`** | Idem. Multi-stage builder + slim runtime. |
-| **Go** | **`dockerfile`** | Idem. |
-| **Node / SvelteKit / Next** | **`nixpacks`** | Solo si configuras adapter-node (ver abajo). |
-| **Static site** (HTML+JS, build output) | **`static`** | Si tenes pre-build, podes usar este. |
-
-**Critico**: para Python/Rust/Go, jamas pases `build_pack="docker-compose"` ni escribas un `docker-compose.yml`. Solo Dockerfile.
-
-## Procedimiento por stack
-
-### SvelteKit (y Node en general)
-SvelteKit con `adapter-auto` genera output ambiguo y nixpacks no sabe arrancarlo. **Siempre** cambia a `adapter-node` antes de deployar.
-
-1. Verifica que existe `svelte.config.js`. Si scaffoldeaste con `pnpm create svelte` / `pnpm dlx sv create`, viene por default con `adapter-auto`.
-2. Agregar la dep:
-   ```bash
-   pnpm add -D @sveltejs/adapter-node
-   ```
-3. Sobrescribir `svelte.config.js`:
-   ```js
-   import adapter from '@sveltejs/adapter-node';
-   import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
-
-   export default {
-     preprocess: vitePreprocess(),
-     kit: { adapter: adapter() }
-   };
-   ```
-4. Validar local que builda:
-   ```bash
-   pnpm install
-   pnpm build
-   ```
-5. Asegurar `package.json` tiene `"start": "node build"` (adapter-node genera `build/index.js`):
-   ```json
-   "scripts": { "build": "vite build", "start": "node build", "dev": "vite dev" }
-   ```
-6. `.gitignore` debe excluir `node_modules`, `.svelte-kit`, `build`.
-7. `github_push_workspace` y despues:
-   ```
-   coolify_create_app(repo_url=..., port=3000, build_pack="nixpacks")
-   ```
-
-### FastAPI / Python
-1. Escribi `Dockerfile`:
-   ```dockerfile
-   FROM python:3.12-slim
-   WORKDIR /app
-   ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
-   COPY requirements.txt .
-   RUN pip install -r requirements.txt
-   COPY . .
-   EXPOSE 8000
-   CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
-   ```
-2. Si usas `uv`:
-   ```dockerfile
-   FROM python:3.12-slim
-   COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-   WORKDIR /app
-   COPY pyproject.toml uv.lock ./
-   RUN uv sync --frozen --no-install-project
-   COPY . .
-   RUN uv sync --frozen
-   EXPOSE 8000
-   CMD ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
-   ```
-3. `.dockerignore` con `__pycache__`, `.venv`, `.env`, `data/`.
-4. Validar local: `docker build -t test . && docker run -p 8000:8000 test`.
-5. `coolify_create_app(repo_url=..., port=8000, build_pack="dockerfile")`.
-
-### Rust (Actix / Axum)
-1. Dockerfile multi-stage:
-   ```dockerfile
-   FROM rust:1-slim AS builder
-   WORKDIR /app
-   COPY . .
-   RUN cargo build --release
-
-   FROM debian:bookworm-slim
-   RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
-   WORKDIR /app
-   COPY --from=builder /app/target/release/<binary-name> /app/server
-   EXPOSE 8080
-   CMD ["./server"]
-   ```
-2. Reemplaza `<binary-name>` por el `[package].name` del `Cargo.toml`.
-3. Validar `cargo build --release` local (es lento, paciencia).
-4. `coolify_create_app(repo_url=..., port=8080, build_pack="dockerfile")`.
-
-### Go
-1. Dockerfile multi-stage:
-   ```dockerfile
-   FROM golang:1.23-alpine AS builder
-   WORKDIR /app
-   COPY go.mod go.sum ./
-   RUN go mod download
-   COPY . .
-   RUN CGO_ENABLED=0 go build -o /app/server ./...
-
-   FROM alpine:latest
-   RUN apk --no-cache add ca-certificates
-   WORKDIR /app
-   COPY --from=builder /app/server .
-   EXPOSE 8080
-   CMD ["./server"]
-   ```
-2. Idem rust pero mas rapido.
-
-## Despues de `coolify_create_app`
-1. Si necesitas env vars: `coolify_set_env(app_uuid=..., key=..., value=...)` por cada una. Marca `is_build_time=true` solo si el build necesita la var (raro para web apps).
-2. `coolify_deploy(app_uuid)` para disparar el primer deploy.
-3. Loop de status:
-   ```
-   coolify_status(app_uuid) -> si status="running" -> listo
-                            -> si status="building"/"queued" -> shell sleep 15, reintentar
-                            -> si status="failed"/"exited" -> leer payload, reportar al usuario
-   ```
-4. Cuando este `running`, reportar el `fqdn` al usuario (es el preview URL).
-
-## Scaffolding non-interactivo
-
-`pnpm create svelte` y `pnpm dlx sv create` son interactivos por default. Para evitar prompts:
-
-**Opcion A — sv create con flags**:
+### SvelteKit / Node / Vite SSR
+**Requiere** `@sveltejs/adapter-node` (no adapter-auto). Pasos antes del Dockerfile:
 ```bash
-pnpm dlx sv create . --template minimal --types ts --no-add-ons --install=pnpm
+pnpm add -D @sveltejs/adapter-node
+```
+Sobrescribir `svelte.config.js`:
+```js
+import adapter from '@sveltejs/adapter-node';
+import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
+export default {
+  preprocess: vitePreprocess(),
+  kit: { adapter: adapter() }
+};
+```
+Asegurar `package.json` tenga `"start": "node build"`.
+
+**Dockerfile** (puerto 3000):
+```dockerfile
+FROM node:20-slim AS deps
+WORKDIR /app
+RUN corepack enable
+COPY package.json pnpm-lock.yaml* ./
+RUN if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; \
+    else pnpm install --no-frozen-lockfile; fi
+
+FROM node:20-slim AS builder
+WORKDIR /app
+RUN corepack enable
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN pnpm build
+
+FROM node:20-slim
+WORKDIR /app
+ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000
+COPY --from=builder /app/build ./build
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/node_modules ./node_modules
+EXPOSE 3000
+CMD ["node", "build"]
 ```
 
-**Opcion B — escribir archivos a mano** con `write_file`. Mas determinista, mejor para apps chicas.
+### Python / FastAPI con uv
+Puerto 8000:
+```dockerfile
+FROM python:3.12-slim
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1 UV_SYSTEM_PYTHON=1
+COPY pyproject.toml uv.lock* ./
+RUN uv sync --frozen --no-install-project 2>/dev/null || uv pip install --system -e .
+COPY . .
+EXPOSE 8000
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
 
-## Errores comunes y como tratarlos
+### Python / FastAPI con pip
+```dockerfile
+FROM python:3.12-slim
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY . .
+EXPOSE 8000
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+### Rust (Actix / Axum)
+Multi-stage para imagen final chica. Reemplaza `<binary>` por el `[package].name` de `Cargo.toml`:
+```dockerfile
+FROM rust:1-slim AS builder
+WORKDIR /app
+COPY . .
+RUN cargo build --release
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=builder /app/target/release/<binary> /app/server
+EXPOSE 8080
+CMD ["./server"]
+```
+
+### Go
+```dockerfile
+FROM golang:1.23-alpine AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /app/server ./...
+
+FROM alpine:latest
+RUN apk --no-cache add ca-certificates
+WORKDIR /app
+COPY --from=builder /app/server .
+EXPOSE 8080
+CMD ["./server"]
+```
+
+### Static (HTML + JS, sin backend)
+Sirve con nginx alpine, puerto 80:
+```dockerfile
+FROM nginx:alpine
+COPY . /usr/share/nginx/html
+EXPOSE 80
+```
+Si tenes build step (Vite, etc):
+```dockerfile
+FROM node:20-slim AS builder
+WORKDIR /app
+RUN corepack enable
+COPY package.json pnpm-lock.yaml* ./
+RUN pnpm install --frozen-lockfile
+COPY . .
+RUN pnpm build
+
+FROM nginx:alpine
+COPY --from=builder /app/dist /usr/share/nginx/html
+EXPOSE 80
+```
+
+## .dockerignore (siempre incluir)
+```
+.git
+.github
+node_modules
+.svelte-kit
+build
+dist
+target
+.venv
+__pycache__
+*.pyc
+.env
+.env.*
+data/
+.DS_Store
+```
+
+## Polling de status (critico)
+
+Despues de `coolify_deploy`, llama `coolify_status` en loop con `shell sleep 15` entre cada call. Estados:
+
+| status | Significa | Que haces |
+|---|---|---|
+| `queued` | Esperando worker | **Sigue esperando**. Reintenta en 15s. |
+| `building` | Buildeando imagen | **Sigue esperando**. Reintenta en 15s. |
+| `starting` | Imagen lista, container arrancando | **Sigue esperando**. Reintenta en 15s. |
+| `running:healthy` / `running:unknown` | **EXITO** | **PARA. Reporta el URL al usuario. NO destruyas ni rehagas nada.** |
+| `failed` / `exited` | Falla real | Lee el payload, identifica el error, fixea, `coolify_deploy` denuevo. NO recrees la app entera. |
+
+**Importante:** `running:unknown` significa que arrancó pero no hay healthcheck configurado. Para web apps simples eso es **exito**. No te dejes confundir por el "unknown".
+
+**Limite de espera:** maximo 6-8 minutos (24-32 polls de 15s). Si pasa eso sin alcanzar `running`, asumi falla y reporta al usuario con el ultimo payload de status.
+
+## Cuando NO destruir
+
+`coolify_destroy_app` es para casos extremos. NO la uses solo porque:
+- Un deploy falló (mejor `coolify_deploy` denuevo despues de fixear)
+- Quieres cambiar el Dockerfile (push nuevo commit y `coolify_deploy`, no necesita destruir)
+- El status es ambiguo
+
+Solo destruis si el usuario lo pide explicitamente, o si el proyecto cambio tanto de stack que la app necesita rearmarse desde cero (ej: pasaste de webserver a worker).
+
+## Errores comunes y como leerlos
 
 | Sintoma | Causa probable | Fix |
 |---|---|---|
-| Coolify exit code != 0 en 30s | Sin server runnable (adapter-auto en svelte) | Cambiar a adapter-node + rebuild |
-| Coolify queued >5min sin pasar a building | server uuid invalido o project uuid invalido | Validar envs del bot |
-| Coolify build fail "no Dockerfile found" | Build pack mal | Si stack es Python/Rust/Go → `dockerfile`; si Node → `nixpacks` |
-| Coolify deploy ok pero URL 502 | Puerto incorrecto | El `port` que pasaste a coolify_create_app debe ser el puerto que tu CMD/EXPOSE expone |
-| Cert SSL fail | Cloudflare proxy on en wildcard | Pedirle al usuario que ponga gray cloud en el wildcard DNS |
+| Status pasa a `failed` en <30s | Build error: dependencia faltante, syntaxis | Lee el payload, fixea, `coolify_deploy` |
+| Status queda en `building` >5 min | Build lento o stuck (rust, big node_modules) | Esperar mas, hasta 8 min |
+| `running` pero el URL devuelve 502 | Puerto del CMD != `port` que pasaste a `coolify_create_app` | `coolify_set_env` + redeploy, o recrear con el puerto correcto |
+| `running` pero URL devuelve "no such service" | DNS aun propagandose (raro con wildcard) | Esperar 30s, recargar |
 
-## Resumen rapido (cheat sheet)
-- Python/Rust/Go → escribi Dockerfile + `build_pack="dockerfile"` + puerto del CMD
-- SvelteKit → adapter-node + `build_pack="nixpacks"` + port 3000
-- Antes de `coolify_create_app`, **siempre** valida que builda local
-- Despues, loopea `coolify_status` con sleeps hasta `running`
+## Cheat sheet
+
+1. Dockerfile siempre. Nunca nixpacks. Nunca docker-compose.
+2. SvelteKit → adapter-node + el Dockerfile de arriba + port 3000.
+3. Python → Dockerfile + port 8000.
+4. Rust/Go → Dockerfile multistage + port 8080 (o el que use tu app).
+5. Static → nginx alpine + port 80.
+6. Despues de `coolify_deploy`: loop con `sleep 15` hasta `running:*`.
+7. Cuando llegue a `running`: REPORTAR EL URL y PARAR. No rehagas nada.
