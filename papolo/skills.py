@@ -4,6 +4,27 @@ import yaml
 SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
 
 
+def _fallback_parse(raw: str) -> dict:
+    """Parser simple para frontmatter cuando YAML tira ScannerError.
+    Toma cada linea `key: value` como entry. No soporta nested ni listas."""
+    meta: dict = {}
+    for line in raw.splitlines():
+        line = line.rstrip()
+        if not line or line.startswith("#"):
+            continue
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if value and value[0] in "\"'" and value[-1] == value[0]:
+            value = value[1:-1]
+        meta[key] = value
+    return meta
+
+
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
     if not text.startswith("---"):
         return {}, text
@@ -14,8 +35,10 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
     body = text[end + 4 :].lstrip("\n")
     try:
         meta = yaml.safe_load(raw) or {}
+        if not isinstance(meta, dict):
+            meta = _fallback_parse(raw)
     except yaml.YAMLError:
-        meta = {}
+        meta = _fallback_parse(raw)
     return meta, body
 
 

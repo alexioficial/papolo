@@ -83,6 +83,40 @@ class Agent:
     def all_tools(self):
         return TOOL_SCHEMAS + [SKILL_TOOL_SCHEMA, SUBAGENT_TOOL_SCHEMA] + DEPLOY_TOOL_SCHEMAS
 
+    def _loop_nudge(self, name: str, raw_args: str, result_str: str) -> str:
+        """Si esta misma tool con estos mismos args ya fallo antes, agrega un nudge.
+        Solo nudgea cuando el resultado actual empieza con ERROR."""
+        if not result_str.lstrip().startswith("ERROR"):
+            return ""
+        failures = 0
+        for i in range(len(self.messages) - 1, -1, -1):
+            m = self.messages[i]
+            if m.get("role") != "tool":
+                continue
+            content = str(m.get("content", ""))
+            if not content.lstrip().startswith("ERROR"):
+                continue
+            tool_call_id = m.get("tool_call_id")
+            if not tool_call_id:
+                continue
+            for j in range(i - 1, -1, -1):
+                am = self.messages[j]
+                if am.get("role") != "assistant":
+                    continue
+                for tc in am.get("tool_calls", []) or []:
+                    if tc.get("id") != tool_call_id:
+                        continue
+                    fn = tc.get("function") or {}
+                    if fn.get("name") == name and (fn.get("arguments") or "{}") == raw_args:
+                        failures += 1
+                break
+            if failures >= 2:
+                return (
+                    "\n\n[NOTA: ya intentaste esta misma tool con args identicos al menos "
+                    "2 veces antes y devolvio ERROR. Cambia el approach, no reintentes igual.]"
+                )
+        return ""
+
     def _dispatch(self, name: str, args: dict, on_event=None) -> str:
         args = _resolve_path_args(name, args, self.workspace_dir)
         if name == "load_skill":
@@ -153,10 +187,12 @@ class Agent:
                 results = list(pool.map(run_call, msg.tool_calls))
 
             for call, result in results:
+                result_str = str(result)
+                nudge = self._loop_nudge(call.function.name, call.function.arguments or "{}", result_str)
                 self.messages.append({
                     "role": "tool",
                     "tool_call_id": call.id,
-                    "content": str(result),
+                    "content": result_str + nudge,
                 })
 
         last_tools = []

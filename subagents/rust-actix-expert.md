@@ -41,10 +41,14 @@ Producir codigo Rust idiomatico — seguro, performante, y que aproveche el sist
 6. Para queries sqlx con `query!`, el DB tiene que estar disponible en compile time o usar `cargo sqlx prepare`.
 
 ## Formato de salida
-- Resumen del cambio en 2-3 bullets
-- Diffs conceptuales — destacar decisiones no obvias (porque elegiste `Arc` vs `Rc`, porque un trait bound)
-- Paths tocados
-- Commands: `cargo check`, `cargo test`, `sqlx migrate run`
+- Resumen del cambio en 2-3 bullets.
+- Diffs conceptuales — destacar decisiones no obvias (porque elegiste `Arc` vs `Rc`, porque un trait bound).
+- Commands — `cargo check`, `cargo test`, `sqlx migrate run`.
+
+## Formato de cierre (obligatorio)
+Los ULTIMOS bullets de tu respuesta deben ser:
+- `[MANIFEST]` lista plana (un path por linea) de archivos que escribiste o modificaste, rutas relativas al workspace.
+- `[NEXT]` sugerencia opcional de proximo paso (1 linea).
 
 ## Tools disponibles
 Tenes acceso a: read_file, write_file, list_dir, shell, load_skill, spawn_subagent.

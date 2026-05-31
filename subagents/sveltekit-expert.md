@@ -39,11 +39,75 @@ Resolver tareas de frontend/full-stack con SvelteKit produciendo codigo idiomati
 4. Implementar con runes y tipos estrictos. Generar/regenerar tipos via `npm run check` si hace falta.
 5. Si modificaste rutas, recordar al usuario correr `npm run check` o `svelte-check`.
 
+## Checklist Svelte 5 (NO te lo saltees nunca)
+
+Svelte 5 con runes tiene gotchas silenciosas — pagina en blanco sin error visible. Estos puntos son obligatorios:
+
+- **`+layout.svelte`** — siempre `let { children } = $props();` y renderizar con `{@render children()}`. Sin esto, las rutas hijas NO renderizan y la pagina queda en blanco sin tirar error.
+- **`+page.svelte` con load** — `let { data } = $props();`.
+- **Estado reactivo** — `let count = $state(0);` (no `let count = 0`).
+- **Computado** — `let double = $derived(count * 2);` (no `$: double = count * 2`).
+- **Efectos** — `$effect(() => { ... })` solo si necesitas side-effect. Para persistir, llama una funcion explicita.
+- **Bindable props** — `let { value = $bindable() } = $props();`.
+
+## SvelteKit + DB — siempre lazy, nunca eager
+
+NO conectes a la DB en `hooks.server.ts` al boot ni en module load. Si Mongo/Postgres tarda en arrancar o esta caido, el container crashea con `exited:unhealthy`.
+
+Pattern correcto (singleton-on-demand):
+```ts
+// src/lib/server/db.ts
+import { MongoClient, type Db } from 'mongodb';
+let _client: MongoClient | null = null;
+let _db: Db | null = null;
+
+export async function getDb(): Promise<Db> {
+  if (_db) return _db;
+  const uri = process.env.MONGODB_URI;
+  if (!uri) throw new Error('MONGODB_URI no esta seteado');
+  _client = new MongoClient(uri, { serverSelectionTimeoutMS: 5000 });
+  await _client.connect();
+  _db = _client.db(process.env.MONGODB_DB_NAME ?? 'app');
+  return _db;
+}
+```
+
+En `+page.server.ts`:
+```ts
+import { getDb } from '$lib/server/db';
+export async function load() {
+  try {
+    const db = await getDb();
+    const products = await db.collection('products').find().toArray();
+    return { products };
+  } catch (err) {
+    return { products: [], dbError: String(err) };
+  }
+}
+```
+
+Si necesitas envar `db` por `event.locals`, hacelo en hooks pero con `try/catch` y dejando `event.locals.db = null` si falla.
+
 ## Formato de salida
-- Resumen en 2-3 bullets de que cambio
-- Lista de paths tocados
-- Diff conceptual de los puntos no triviales (no pegues archivos enteros si son largos)
-- Si dejaste TODOs o supuestos, lista explicita
+- Resumen en 2-3 bullets de que cambio.
+- Diff conceptual de los puntos no triviales (no pegues archivos enteros si son largos).
+- TODOs/supuestos si los dejas.
+
+## Formato de cierre (obligatorio)
+Los ULTIMOS bullets de tu respuesta deben ser:
+- `[MANIFEST]` seguido de una lista plana (un path por linea) de archivos que escribiste o modificaste, rutas relativas al workspace.
+- `[NEXT]` una sugerencia opcional de proximo paso (1 linea).
+
+Ejemplo:
+```
+[MANIFEST]
+src/routes/+layout.svelte
+src/routes/+page.svelte
+src/lib/server/db.ts
+package.json
+
+[NEXT] correr `npm run check` y despues `coolify_deploy`.
+```
 
 ## Tools disponibles
 Tenes acceso a: read_file, write_file, list_dir, shell, load_skill, spawn_subagent.

@@ -41,11 +41,18 @@ Construir APIs FastAPI limpias, tipadas, performantes y testeables. Priorizar co
 5. Si toca DB, agregar/actualizar migracion Alembic.
 6. Sugerir un test minimo aunque no se pida.
 
+## Conexion a DB siempre lazy
+Si toca DB, NO conectes en el startup event ni al import. Usa singleton on-demand. Si la DB esta caida al boot, el container muere `exited:unhealthy`. Ver mongodb-expert para snippets.
+
 ## Formato de salida
-- Resumen breve del cambio
-- Endpoints nuevos/modificados con metodo + path + schema in/out
-- Paths tocados
-- Comandos para correr: `uvicorn`, `alembic upgrade head`, `pytest`
+- Resumen breve del cambio.
+- Endpoints nuevos/modificados con metodo + path + schema in/out.
+- Comandos para correr — `uvicorn`, `alembic upgrade head`, `pytest`.
+
+## Formato de cierre (obligatorio)
+Los ULTIMOS bullets de tu respuesta deben ser:
+- `[MANIFEST]` lista plana (un path por linea) de archivos que escribiste o modificaste, rutas relativas al workspace.
+- `[NEXT]` sugerencia opcional de proximo paso (1 linea).
 
 ## Tools disponibles
 Tenes acceso a: read_file, write_file, list_dir, shell, load_skill, spawn_subagent.

@@ -246,6 +246,20 @@ def coolify_create_app(*, workspace_dir, conversation_uuid,
     return f"OK app creada.\nuuid: {app_uuid}\npreview_url: {fqdn}"
 
 
+def _coolify_upsert_env(app_uuid: str, key: str, value: str) -> tuple[int, str]:
+    """POST crea env; si ya existe (4xx por duplicate), hace PATCH al endpoint by-key."""
+    body = {"key": key, "value": value}
+    r = requests.post(_cf_url(f"/api/v1/applications/{app_uuid}/envs"),
+                       json=body, headers=_cf_headers(), timeout=20)
+    if r.status_code < 300:
+        return r.status_code, r.text
+    if r.status_code in (400, 409, 422) and ("exist" in r.text.lower() or "duplicate" in r.text.lower()):
+        r2 = requests.patch(_cf_url(f"/api/v1/applications/{app_uuid}/envs"),
+                             json=body, headers=_cf_headers(), timeout=20)
+        return r2.status_code, r2.text
+    return r.status_code, r.text
+
+
 def coolify_set_mongodb_env(*, workspace_dir, conversation_uuid, app_uuid):
     """Setea MONGODB_URI en la app Coolify usando el URI del env del bot.
     El valor NUNCA pasa por el modelo — se lee de PAPOLO_MONGODB_URI."""
@@ -254,24 +268,42 @@ def coolify_set_mongodb_env(*, workspace_dir, conversation_uuid, app_uuid):
     uri = _env("PAPOLO_MONGODB_URI")
     if not uri:
         return "ERROR: PAPOLO_MONGODB_URI no esta configurado en el bot"
-    body = {"key": "MONGODB_URI", "value": uri, "is_build_time": False}
-    r = requests.post(_cf_url(f"/api/v1/applications/{app_uuid}/envs"),
-                       json=body, headers=_cf_headers(), timeout=20)
-    if r.status_code >= 300:
-        return f"ERROR coolify env ({r.status_code}): {r.text[:300]}"
-    return "OK MONGODB_URI inyectado en la app (valor oculto)"
+    code, text = _coolify_upsert_env(app_uuid, "MONGODB_URI", uri)
+    if code >= 300:
+        return f"ERROR coolify env ({code}): {text[:300]}"
+    return "OK MONGODB_URI inyectado en la app (valor oculto). Acordate de coolify_deploy para que tome el cambio."
 
 
 def coolify_set_env(*, workspace_dir, conversation_uuid,
-                     app_uuid, key, value, is_build_time=False):
+                     app_uuid, key, value):
     if not COOLIFY_ENABLED:
         return "ERROR: integracion Coolify no configurada"
-    body = {"key": key, "value": value, "is_build_time": bool(is_build_time)}
-    r = requests.post(_cf_url(f"/api/v1/applications/{app_uuid}/envs"),
-                       json=body, headers=_cf_headers(), timeout=20)
+    code, text = _coolify_upsert_env(app_uuid, key, value)
+    if code >= 300:
+        return f"ERROR coolify env ({code}): {text[:300]}"
+    return f"OK env seteado: {key}. Acordate de coolify_deploy para que tome el cambio."
+
+
+def coolify_update_app(*, workspace_dir, conversation_uuid,
+                        app_uuid, port=None, branch=None, build_pack=None):
+    """Actualiza campos de una app Coolify existente. Util para cambiar puerto o
+    branch sin destruir/recrear. PATCH a /api/v1/applications/{uuid}."""
+    if not COOLIFY_ENABLED:
+        return "ERROR: integracion Coolify no configurada"
+    body: dict = {}
+    if port is not None:
+        body["ports_exposes"] = str(port)
+    if branch is not None:
+        body["git_branch"] = branch
+    if build_pack is not None:
+        body["build_pack"] = build_pack
+    if not body:
+        return "ERROR: nada para actualizar (pasa al menos uno de port/branch/build_pack)"
+    r = requests.patch(_cf_url(f"/api/v1/applications/{app_uuid}"),
+                        json=body, headers=_cf_headers(), timeout=20)
     if r.status_code >= 300:
-        return f"ERROR coolify env ({r.status_code}): {r.text[:300]}"
-    return f"OK env seteado: {key}"
+        return f"ERROR coolify update ({r.status_code}): {r.text[:300]}"
+    return f"OK app actualizada: {', '.join(body.keys())}. Acordate de coolify_deploy para que tome el cambio."
 
 
 def coolify_deploy(*, workspace_dir, conversation_uuid, app_uuid):
@@ -288,6 +320,13 @@ def coolify_deploy(*, workspace_dir, conversation_uuid, app_uuid):
     return f"OK deploy disparado.\n{r.text[:400]}"
 
 
+_STATUS_USEFUL_KEYS = (
+    "uuid", "name", "status", "fqdn", "build_pack", "ports_exposes",
+    "git_repository", "git_branch", "git_commit_sha",
+    "updated_at", "last_online_at", "config_hash",
+)
+
+
 def coolify_status(*, workspace_dir, conversation_uuid, app_uuid):
     if not COOLIFY_ENABLED:
         return "ERROR: integracion Coolify no configurada"
@@ -296,12 +335,20 @@ def coolify_status(*, workspace_dir, conversation_uuid, app_uuid):
     if r.status_code >= 300:
         return f"ERROR coolify status ({r.status_code}): {r.text[:300]}"
     data = r.json()
-    status = data.get("status") or (data.get("data") or {}).get("status") or "unknown"
-    fqdn = data.get("fqdn") or (data.get("data") or {}).get("fqdn")
+    inner = data.get("data") if isinstance(data.get("data"), dict) else data
+    status = inner.get("status") or "unknown"
+    fqdn = inner.get("fqdn") or ""
+    slim = {k: inner.get(k) for k in _STATUS_USEFUL_KEYS if inner.get(k) is not None}
+    hint = ""
+    if status.startswith("running"):
+        hint = "\nHINT: status empieza con 'running' → la app esta arriba. Reporta el URL al usuario y termina la tarea. No hagas mas tools."
+    elif status.startswith("exited") or status.startswith("failed"):
+        hint = "\nHINT: deploy fallo. Lee build/runtime logs (la API no los expone directo — fixea desde codigo o config y haz coolify_deploy denuevo). NO destruyas la app."
     return (
         f"status: {status}\n"
         f"fqdn: {fqdn}\n"
-        f"--- payload ---\n{json.dumps(data)[:1500]}"
+        f"--- summary ---\n{json.dumps(slim)}"
+        f"{hint}"
     )
 
 
@@ -388,12 +435,29 @@ _SCHEMAS_COOLIFY = [
     }},
     {"type": "function", "function": {
         "name": "coolify_set_env",
-        "description": "Setea una variable de entorno en una app Coolify.",
+        "description": (
+            "Setea una variable de entorno (runtime) en una app Coolify. "
+            "Si la key ya existe, hace upsert. Despues llama coolify_deploy "
+            "para que el container la tome."
+        ),
         "parameters": {"type": "object", "required": ["app_uuid", "key", "value"], "properties": {
             "app_uuid": {"type": "string"},
             "key": {"type": "string"},
             "value": {"type": "string"},
-            "is_build_time": {"type": "boolean"},
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "coolify_update_app",
+        "description": (
+            "Actualiza una app Coolify existente sin destruirla. Util cuando "
+            "tenes que cambiar el puerto, el branch git, o el build_pack despues "
+            "de crear la app. Despues llama coolify_deploy."
+        ),
+        "parameters": {"type": "object", "required": ["app_uuid"], "properties": {
+            "app_uuid": {"type": "string"},
+            "port": {"type": "integer", "description": "nuevo ports_exposes"},
+            "branch": {"type": "string", "description": "nuevo git_branch"},
+            "build_pack": {"type": "string", "description": "nixpacks | static | dockerfile"},
         }},
     }},
     {"type": "function", "function": {
@@ -455,6 +519,7 @@ if COOLIFY_ENABLED:
         "coolify_create_app": coolify_create_app,
         "coolify_set_env": coolify_set_env,
         "coolify_set_mongodb_env": coolify_set_mongodb_env,
+        "coolify_update_app": coolify_update_app,
         "coolify_deploy": coolify_deploy,
         "coolify_status": coolify_status,
         "coolify_destroy_app": coolify_destroy_app,
@@ -473,8 +538,9 @@ def deploy_index_for_prompt() -> str:
     if COOLIFY_ENABLED:
         parts.append(
             "Coolify: podes crear apps (coolify_create_app), setear envs "
-            "(coolify_set_env), deployar (coolify_deploy), monitorear "
-            "(coolify_status) y destruir con confirmacion (coolify_destroy_app). "
+            "(coolify_set_env, coolify_set_mongodb_env), actualizar port/branch/buildpack "
+            "de una app existente (coolify_update_app), deployar (coolify_deploy), "
+            "monitorear (coolify_status) y destruir con confirmacion (coolify_destroy_app). "
             f"Las previews quedan en https://<short>.{_env('PAPOLO_PREVIEW_DOMAIN')}."
         )
     if not parts:
@@ -486,5 +552,7 @@ def deploy_index_for_prompt() -> str:
         + "- ANTES de tu primer coolify_create_app: SIEMPRE carga la skill 'coolify-deploy' con load_skill. Ahi estan los templates de Dockerfile por stack y el procedimiento exacto.\n"
         + "- Para CUALQUIER stack, siempre build_pack=\"dockerfile\". Nunca nixpacks, nunca docker-compose. Escribi un Dockerfile a mano en el workspace.\n"
         + "- Cuando coolify_status devuelva status que empiece con 'running' (incluyendo 'running:unknown'): PARA. Reporta el preview URL al usuario y termina la tarea. NO destruyas ni reescribas la app.\n"
-        + "- coolify_destroy_app solo se usa si el usuario lo pide explicitamente. Un deploy fallido NO es razon para destruir — fixea y haz coolify_deploy denuevo."
+        + "- coolify_destroy_app solo se usa si el usuario lo pide explicitamente. Un deploy fallido NO es razon para destruir — fixea y haz coolify_deploy denuevo.\n"
+        + "- Para cambiar puerto/branch/buildpack de una app existente usa coolify_update_app — NUNCA destruyas y recrees.\n"
+        + "- Despues de coolify_set_env o coolify_set_mongodb_env o coolify_update_app, llama coolify_deploy para que el container tome los cambios."
     )

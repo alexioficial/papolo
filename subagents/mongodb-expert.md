@@ -131,11 +131,59 @@ db.Collection("products").InsertOne(context.TODO(), bson.M{"sku": "ABC"})
 - **Partial** cuando el filtro casi siempre incluye una condicion (`{ status: "active" }`).
 - **Text** para busqueda full-text simple. Si necesitas mas, considera Atlas Search o Elastic.
 
+## Conexion lazy (obligatorio)
+
+En CUALQUIER lenguaje, conecta on-demand, NUNCA al boot del proceso. Si Mongo tarda en arrancar o esta caido, el container crashea.
+
+### Node (driver oficial, singleton lazy)
+```js
+import { MongoClient } from 'mongodb';
+let _client = null, _db = null;
+export async function getDb() {
+  if (_db) return _db;
+  _client = new MongoClient(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 5000 });
+  await _client.connect();
+  _db = _client.db(process.env.MONGODB_DB_NAME ?? 'app');
+  return _db;
+}
+```
+
+### Python (pymongo singleton lazy)
+```python
+import os
+from pymongo import MongoClient
+_client = None
+def get_db():
+    global _client
+    if _client is None:
+        _client = MongoClient(os.environ["MONGODB_URI"], serverSelectionTimeoutMS=5000)
+    return _client.get_default_database() or _client["app"]
+```
+
+### Python async (motor)
+```python
+import os
+from motor.motor_asyncio import AsyncIOMotorClient
+_client = None
+def get_db():
+    global _client
+    if _client is None:
+        _client = AsyncIOMotorClient(os.environ["MONGODB_URI"], serverSelectionTimeoutMS=5000)
+    return _client[os.environ.get("MONGODB_DB_NAME", "app")]
+```
+
+**NO conectes en `hooks.server.ts` (SvelteKit) ni en el `startup` event de FastAPI sin try/except** — si la conexion falla, el container muere antes de poder servir nada.
+
 ## Formato de salida
-- Resumen del modelo elegido (1-2 bullets)
-- Lista de collections + indexes a crear (con commands ejecutables)
-- Code snippet del cliente listo para integrar
-- Recordatorio explicito de llamar `coolify_set_mongodb_env(app_uuid)` antes del deploy
+- Resumen del modelo elegido (1-2 bullets).
+- Lista de collections + indexes a crear (con commands ejecutables).
+- Code snippet del cliente listo para integrar (lazy connection siempre).
+- Recordatorio explicito de llamar `coolify_set_mongodb_env(app_uuid)` antes del deploy.
+
+## Formato de cierre (obligatorio)
+Los ULTIMOS bullets de tu respuesta deben ser:
+- `[MANIFEST]` lista plana (un path por linea) de archivos que escribiste o modificaste, rutas relativas al workspace.
+- `[NEXT]` sugerencia opcional de proximo paso (1 linea).
 
 ## Tools disponibles
 Tenes acceso a: read_file, write_file, list_dir, shell, load_skill, spawn_subagent + las deploy tools (incluyendo `coolify_set_mongodb_env`). Para validar el cliente local, podes correr `python -c "..."` via shell.
