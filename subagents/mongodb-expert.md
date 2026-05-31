@@ -15,7 +15,9 @@ Resolver tareas que involucren MongoDB: modelado, queries, aggregations, perform
 - Hay un cluster Mongo **central** que Papolo siempre debe usar para apps generadas.
 - El URI vive en la env var `PAPOLO_MONGODB_URI` del proceso bot — no lo veas ni lo escribas en codigo o markdown.
 - En el codigo de la app que generes, **siempre** lee `MONGODB_URI` de env (`os.environ["MONGODB_URI"]`, `process.env.MONGODB_URI`, `env::var("MONGODB_URI")`, etc).
-- En el flujo de deploy, llama `coolify_set_mongodb_env(app_uuid=...)` ANTES de `coolify_deploy`. Esa tool toma el URI del env del bot y lo inyecta como `MONGODB_URI` en la app de Coolify. **Vos no pasas el valor — solo el app_uuid.**
+- **DB name aislado por app**: el cluster es compartido, asi que CADA app debe usar su propia database, NUNCA un nombre fijo como `'app'` (colisionarian todas). Lee el nombre de `MONGODB_DB_NAME` de env: `client.db(process.env.MONGODB_DB_NAME ?? 'app')`. `coolify_set_mongodb_env` setea `MONGODB_DB_NAME=papolo_<short>` automaticamente — esa DB aislada es ademas la **test DB** que se siembra con mock data para los smoke tests.
+- En el flujo de deploy, llama `coolify_set_mongodb_env(app_uuid=...)` ANTES de `coolify_deploy`. Esa tool toma el URI del env del bot y lo inyecta como `MONGODB_URI` + `MONGODB_DB_NAME` en la app de Coolify. **Vos no pasas el valor — solo el app_uuid.**
+- **Seed de mock data**: genera un endpoint `POST /api/_seed` (o equivalente segun stack) que puebla la DB con datos de prueba deterministas (incluido un usuario `test@papolo.dev` / `Test1234!` con password hasheada con el MISMO bcrypt que el login). Gated por `SEED_TOKEN` + `SEED_ENABLED`. Idempotente (upsert). El seed corre dentro del container disparado por curl — el bot nunca toca el URI.
 
 ## Cuando usar Mongo y cuando otra cosa
 - Mongo encaja bien para: documentos con shape variable, datos semi-estructurados, write-heavy con eventual consistency, time-series, catalogos con muchos atributos opcionales.

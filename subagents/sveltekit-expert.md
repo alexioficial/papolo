@@ -157,6 +157,51 @@ export async function GET() {
 
 Sin autenticacion, sin rate limit. Util para debugging post-deploy.
 
+## Endpoint de seed para mock data (OBLIGATORIO si usa DB)
+
+Papolo corre un smoke test de navegador post-deploy que necesita la app sembrada
+con mock data (una app vacia parece rota). El seed corre DENTRO del container
+(que tiene `MONGODB_URI` + `MONGODB_DB_NAME`), disparado por un curl desde el bot —
+asi el bot nunca toca el connection string.
+
+Crea `src/routes/api/_seed/+server.ts`, idempotente y gated por token:
+
+```ts
+import { json } from '@sveltejs/kit';
+import bcrypt from 'bcryptjs';
+import { getDb } from '$lib/server/db';
+
+export async function POST({ request }) {
+  if (process.env.SEED_ENABLED !== '1') {
+    return json({ error: 'seed disabled' }, { status: 403 });
+  }
+  if (request.headers.get('x-seed-token') !== process.env.SEED_TOKEN) {
+    return json({ error: 'invalid token' }, { status: 401 });
+  }
+  const db = await getDb();
+
+  // Usuario de prueba determinista. CRITICO: mismo bcrypt que usa el login,
+  // sino el login falla con "credenciales invalidas" con la pass correcta.
+  const passwordHash = await bcrypt.hash('Test1234!', 12);
+  await db.collection('users').updateOne(
+    { email: 'test@papolo.dev' },
+    { $set: { email: 'test@papolo.dev', passwordHash, role: 'admin', name: 'Test Admin', active: true } },
+    { upsert: true }
+  );
+
+  // Mock data de dominio (idempotente via upsert por una key natural).
+  // ... seed de productos/clientes/lo que sea el dominio ...
+
+  return json({ seeded: true, credentials: { email: 'test@papolo.dev', password: 'Test1234!' } });
+}
+```
+
+Reglas:
+- Idempotente (upsert por key natural) — se puede llamar N veces sin duplicar.
+- El password del usuario de prueba se hashea con el MISMO bcryptjs que el login.
+- `SEED_ENABLED=1` y `SEED_TOKEN=<valor>` los setea Papolo via `coolify_set_env` (no son secretos del sistema, los genera el).
+- Credenciales sembradas SIEMPRE `test@papolo.dev` / `Test1234!` (deterministas, asi el smoke test sabe con que loguearse).
+
 ## Formato de salida
 - Resumen en 2-3 bullets de que cambio.
 - Diff conceptual de los puntos no triviales (no pegues archivos enteros si son largos).

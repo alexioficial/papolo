@@ -261,8 +261,13 @@ def _coolify_upsert_env(app_uuid: str, key: str, value: str) -> tuple[int, str]:
 
 
 def coolify_set_mongodb_env(*, workspace_dir, conversation_uuid, app_uuid):
-    """Setea MONGODB_URI en la app Coolify usando el URI del env del bot.
-    El valor NUNCA pasa por el modelo — se lee de PAPOLO_MONGODB_URI."""
+    """Setea MONGODB_URI + MONGODB_DB_NAME en la app Coolify.
+
+    El URI se lee de PAPOLO_MONGODB_URI (NUNCA pasa por el modelo).
+    El DB_NAME es unico por app (papolo_<short>): aisla la data de cada app en
+    el cluster compartido (sino todas colisionan en la DB default 'app') y sirve
+    como la 'test DB' que el modelo siembra con mock data para los smoke tests.
+    El DB_NAME NO es secreto — se devuelve para que el modelo lo conozca."""
     if not COOLIFY_ENABLED:
         return "ERROR: integracion Coolify no configurada"
     uri = _env("PAPOLO_MONGODB_URI")
@@ -270,8 +275,21 @@ def coolify_set_mongodb_env(*, workspace_dir, conversation_uuid, app_uuid):
         return "ERROR: PAPOLO_MONGODB_URI no esta configurado en el bot"
     code, text = _coolify_upsert_env(app_uuid, "MONGODB_URI", uri)
     if code >= 300:
-        return f"ERROR coolify env ({code}): {text[:300]}"
-    return "OK MONGODB_URI inyectado en la app (valor oculto). Acordate de coolify_deploy para que tome el cambio."
+        return f"ERROR coolify env MONGODB_URI ({code}): {text[:300]}"
+    db_name = f"papolo_{_short(conversation_uuid)}"
+    code2, text2 = _coolify_upsert_env(app_uuid, "MONGODB_DB_NAME", db_name)
+    if code2 >= 300:
+        return (
+            f"OK MONGODB_URI inyectado (valor oculto), PERO fallo MONGODB_DB_NAME "
+            f"({code2}): {text2[:200]}. Seteala manualmente con coolify_set_env "
+            f"(key=MONGODB_DB_NAME, value={db_name}) antes de deployar."
+        )
+    return (
+        f"OK MONGODB_URI inyectado (valor oculto) y MONGODB_DB_NAME={db_name}. "
+        f"Esa es la DB aislada de esta app — usala como tu test DB y sembrala con "
+        f"mock data (endpoint /api/_seed). Acordate de coolify_deploy para que el "
+        f"container tome los cambios."
+    )
 
 
 def coolify_set_env(*, workspace_dir, conversation_uuid,
@@ -342,12 +360,17 @@ def coolify_status(*, workspace_dir, conversation_uuid, app_uuid):
     hint = ""
     if status.startswith("running"):
         hint = (
-            "\nHINT: la app esta 'running' pero puede estar sirviendo un build viejo "
-            "(Docker cache). Si el usuario reporta contenido incorrecto, no es un bug "
-            "del codigo — necesitas cache busting. No reintentes tools de deploy en "
-            "bucle. Mejor: (1) agrega un comentario unico en el Dockerfile (cache buster), "
-            "(2) commit y push, (3) coolify_deploy. Solo 1 intento. Si sigue igual, "
-            "reporta al usuario y pedile instrucciones."
+            "\nHINT: la app esta 'running', o sea el container arranco — pero ESO NO "
+            "prueba que la app funcione. ANTES de reportar exito al usuario: si la app "
+            "tiene UI (login, dashboard, formularios, CRUD), carga la skill 'agent-browser' "
+            "y corre el smoke test de navegador: sembra la test DB con mock data, verifica "
+            "el render real, logueate con las creds sembradas, revisa console/errors JS y "
+            "saca un screenshot. Solo con el test en verde reporta el preview URL y termina. "
+            "Si es una API pura sin frontend, basta `curl /api/health`. "
+            "OJO: 'running' tambien puede servir un build viejo (Docker cache) — si el "
+            "contenido no coincide con el codigo recien pusheado, es cache busting, no un "
+            "bug: agrega un comentario unico al Dockerfile, commit, push, coolify_deploy "
+            "(1 intento). NO reintentes deploy en bucle."
         )
     elif status.startswith("exited") or status.startswith("failed"):
         hint = "\nHINT: deploy fallo. Lee build/runtime logs (la API no los expone directo — fixea desde codigo o config y haz coolify_deploy denuevo). NO destruyas la app."

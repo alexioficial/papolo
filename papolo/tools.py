@@ -24,7 +24,7 @@ def _safe_shell_env() -> dict:
     for k, v in os.environ.items():
         if any(k.startswith(p) for p in _SHELL_ENV_BLOCK_PREFIXES):
             continue
-        if k in _SHELL_ENV_ALLOW or k.startswith(("XDG_", "GIT_")):
+        if k in _SHELL_ENV_ALLOW or k.startswith(("XDG_", "GIT_", "AGENT_BROWSER_")):
             out[k] = v
     return out
 

@@ -44,6 +44,11 @@ class PipelineTracker:
         self.unhealthy_app_uuid: str | None = None
         self.deploy_consecutive_failures: int = 0
 
+        # Smoke test de navegador tracking
+        self.deploy_happened: bool = False        # hubo al menos un coolify_deploy
+        self.browser_tested: bool = False         # se corrio agent-browser desde el ultimo deploy
+        self.browser_nudge_fired: bool = False    # soft-gate one-shot ya disparado
+
     # ── Deteccion ──────────────────────────────────────────────
 
     def detect_project_type(self, user_message: str):
@@ -216,11 +221,20 @@ class PipelineTracker:
         elif name == "coolify_deploy":
             app_uuid = args.get("app_uuid", "unknown")
             self.deploy_attempts[app_uuid] = self.deploy_attempts.get(app_uuid, 0) + 1
+            # Cada deploy reabre la obligacion de smoke-testear
+            self.deploy_happened = True
+            self.browser_tested = False
+            self.browser_nudge_fired = False
             # Si el resultado menciona unhealthy, marcarlo
             if "unhealthy" in result.lower() or "failed" in result.lower():
                 self.last_deploy_unhealthy = True
                 self.unhealthy_app_uuid = app_uuid
                 self.deploy_consecutive_failures += 1
+
+        elif name == "shell":
+            # Detectar si corrio el smoke test de navegador
+            if "agent-browser" in args.get("command", ""):
+                self.browser_tested = True
 
         elif name == "coolify_status":
             if "unhealthy" in result.lower() or "exited" in result.lower():
@@ -235,6 +249,17 @@ class PipelineTracker:
             if "APTO PARA DEPLOY" in result or ("[PASS]" in result and "[FAIL]" not in result):
                 self.production_check_passed = True
 
+    def should_nudge_browser_test(self) -> bool:
+        """True si hay que recordarle al modelo que corra el smoke test de navegador
+        antes de dar la respuesta final. Soft-gate one-shot (no es un block duro:
+        el pipeline no sabe con certeza si la app tiene UI)."""
+        return (
+            self.deploy_happened
+            and self.mode != self.MODE_CONVERSATION
+            and not self.browser_tested
+            and not self.browser_nudge_fired
+        )
+
     def summary_for_subagent(self) -> str:
         """Resumen del estado del pipeline para inyectar en system prompt de subagentes."""
         parts = []
@@ -246,6 +271,8 @@ class PipelineTracker:
             parts.append(f"- Skills cargadas: {', '.join(sorted(self.skills_loaded))}")
         if self.last_deploy_unhealthy:
             parts.append("- ULTIMO DEPLOY: FALLIDO (unhealthy) - diagnosticar antes de reintentar")
+        if self.deploy_happened and not self.browser_tested:
+            parts.append("- Smoke test de navegador: PENDIENTE (corré agent-browser antes de done)")
         parts.append(f"- Modo: {self.mode}")
         return "\n".join(parts)
 

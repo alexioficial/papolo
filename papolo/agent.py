@@ -52,6 +52,7 @@ Skills criticas — cargalas OBLIGATORIAMENTE segun el contexto:
 - Cuando implementes componentes UI o SvelteKit: carga `professional-ui-design` primero — genera DESIGN.md completo antes de tocar codigo. Sigue sus reglas anti-AI-slop (nada de gradients purple, Inter font, em-dash, nombres genericos, tarjetas de 3 columnas iguales).
 - ANTES de buildear o deployar: carga `production-quality`. Verifica que el codigo no tenga placeholders, templates default, "Welcome to SvelteKit", +page.svelte sin contenido real, falta de import '../app.css', ni implementaciones a medias. Si encuentra algo, lo fixea antes de buildear.
 - Para deploy: carga `coolify-deploy` (templates Dockerfile, polling, cache busting).
+- **Despues de que un deploy llegue a 'running' en una app con UI**: carga `agent-browser` y corre el smoke test de navegador ANTES de reportar exito. Sembra una test DB con mock data que vos mismo generas (nunca testees contra datos reales ni vacios), logueate con las credenciales sembradas, verifica el render real, revisa console/errors JS y saca un screenshot. Solo con PASS reportas el URL al usuario. Para APIs puras sin frontend, basta `curl /api/health`.
 - Las skills existentes siguen disponibles: `code-review`, `debugging-systematic`, `git-workflow`, `writing-tests`, `refactoring-safely`, `web-search`, `search-docs`, `ui-ux-pro-max`.
 
 Planificacion (segun clasificacion):
@@ -76,6 +77,7 @@ Regla de calidad (NO NEGOCIABLE):
 - Si la pagina se ve en blanco post-deploy: probablemente falta `{{@render children()}}` en layout o falta `import '../app.css'` para Tailwind 4. Fixea y redeploy. NO asumas que es otro error — verifica estos dos primero.
 - Nunca dejes `TODO`, `FIXME`, `placeholder`, `Lorem ipsum`, codigo comentado ni implementaciones a medio hacer en archivos que se buildear.
 - Cada ruta raiz (`/`) debe tener contenido real del sistema. No existe el concepto de "pagina de bienvenida" en sistemas de produccion.
+- "Status: running" en Coolify NO prueba que la app funciona — solo que el container arranco. Para apps con UI, "funciona" significa que el smoke test de `agent-browser` paso (render real + login + sin errores JS). NUNCA reportes exito de una app con UI sin haber corrido el smoke test, o sin dejar constancia explicita de por que no pudiste (ej. Chrome headless no instalado en el VPS).
 
 Iteraciones — tu tienes un limite de ~50 tool calls por respuesta. Si llegas a 50 sin haber respondido, el sistema te va a pedir que resumas urgentemente. No entres en loops de debug sin progreso visible. Si una tool devuelve error, maximo 2 reintentos — si sigue fallando, reportalo al usuario y pedi instrucciones en vez de seguir intentando solo.
 
@@ -277,6 +279,24 @@ class Agent:
             self.messages.append(msg.model_dump(exclude_none=True))
 
             if not msg.tool_calls:
+                # Soft-gate one-shot: deployaste pero no corriste el smoke test
+                if self.pipeline.should_nudge_browser_test():
+                    self.pipeline.browser_nudge_fired = True
+                    self.messages.append({
+                        "role": "user",
+                        "content": (
+                            "[VERIFICACION PRE-DONE — deployaste pero todavia no corriste "
+                            "el smoke test de navegador. Si la app tiene UI (login, dashboard, "
+                            "formularios, CRUD): carga la skill 'agent-browser', sembra la test "
+                            "DB con mock data y verifica el render real contra el preview URL "
+                            "(login con las creds sembradas, console/errors JS, screenshot). "
+                            "Emite PASS/FAIL explicito. Si es una API pura sin frontend, validá "
+                            "con `curl $PREVIEW/api/health` y dejá constancia de eso. Recien "
+                            "entonces responde al usuario. Esto es one-shot: no se repite.]"
+                        ),
+                    })
+                    iter_count += 1
+                    continue
                 final = msg.content or ""
                 safe_event("final", {"content": final})
                 return final
