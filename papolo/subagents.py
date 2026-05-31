@@ -8,6 +8,7 @@ from .deepseek import get_client, model_name
 from .tools import TOOL_SCHEMAS, DISPATCH
 from .skills import SKILL_TOOL_SCHEMA, skill_tool_dispatch
 from .deploy import DEPLOY_TOOL_SCHEMAS, DEPLOY_DISPATCH
+from .prompts import REASONING_PROTOCOL
 
 SUBAGENTS_DIR = Path(__file__).resolve().parent.parent / "subagents"
 MAX_PARALLEL_TOOL_CALLS = int(os.environ.get("PAPOLO_MAX_PARALLEL", "8"))
@@ -124,6 +125,9 @@ def spawn_subagent(
 
     meta, system_prompt = _parse_frontmatter(md_path.read_text(encoding="utf-8"))
     sub_model = meta.get("model", model_name())
+
+    # El protocolo de razonamiento aplica a TODOS los subagentes
+    system_prompt += f"\n\n{REASONING_PROTOCOL}"
 
     if workspace_dir:
         system_prompt += (

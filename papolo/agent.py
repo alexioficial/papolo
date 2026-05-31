@@ -11,10 +11,13 @@ from .skills import SKILL_TOOL_SCHEMA, skill_tool_dispatch, skills_index_for_pro
 from .subagents import SUBAGENT_TOOL_SCHEMA, spawn_subagent, subagents_index_for_prompt
 from .deploy import DEPLOY_TOOL_SCHEMAS, DEPLOY_DISPATCH, deploy_index_for_prompt
 from .pipeline import PipelineTracker
+from .prompts import REASONING_PROTOCOL
 
 
 MAX_PARALLEL_TOOL_CALLS = int(os.environ.get("PAPOLO_MAX_PARALLEL", "8"))
 PER_CALL_MAX_ITERS = int(os.environ.get("PAPOLO_PER_CALL_MAX_ITERS", "50"))
+# Checkpoint de reflexion anti-garrotera: a mitad del loop forzamos un paso atras
+REFLEXION_AT_ITER = int(os.environ.get("PAPOLO_REFLEXION_AT_ITER", "20"))
 
 
 def build_system_prompt(extra: str = "") -> str:
@@ -75,6 +78,8 @@ Regla de calidad (NO NEGOCIABLE):
 - Cada ruta raiz (`/`) debe tener contenido real del sistema. No existe el concepto de "pagina de bienvenida" en sistemas de produccion.
 
 Iteraciones — tu tienes un limite de ~50 tool calls por respuesta. Si llegas a 50 sin haber respondido, el sistema te va a pedir que resumas urgentemente. No entres en loops de debug sin progreso visible. Si una tool devuelve error, maximo 2 reintentos — si sigue fallando, reportalo al usuario y pedi instrucciones en vez de seguir intentando solo.
+
+{REASONING_PROTOCOL}
 
 {extra}""".strip()
 
@@ -227,6 +232,7 @@ class Agent:
 
         iter_count = 0
         forced_cap = False
+        reflexion_fired = False
         while True:
             if self.max_iters > 0 and iter_count >= self.max_iters:
                 break
@@ -238,6 +244,25 @@ class Agent:
                         f"[Has usado {iter_count} iteraciones en esta respuesta. "
                         f"Es hora de resumir y responder al usuario con lo que tienes. "
                         f"No hagas mas tool calls. Responde en maximo 3 parrafos.]"
+                    ),
+                })
+                iter_count += 1
+                continue
+            # Checkpoint de reflexion anti-garrotera: a mitad del camino, parar y pensar
+            if (not reflexion_fired and 0 < REFLEXION_AT_ITER <= iter_count
+                    and iter_count < PER_CALL_MAX_ITERS):
+                reflexion_fired = True
+                self.messages.append({
+                    "role": "user",
+                    "content": (
+                        f"[REFLEXION OBLIGATORIA — llevas {iter_count} iteraciones sin cerrar. "
+                        f"PARA y razona en texto antes del proximo tool_call:\n"
+                        f"1. Que intente hasta ahora y que aprendi de cada intento.\n"
+                        f"2. Cual es mi HIPOTESIS actual de la causa raiz del problema (si estoy debuggeando).\n"
+                        f"3. Estoy repitiendo algo que ya fallo? Si si, CAMBIO de estrategia.\n"
+                        f"4. Cual es el proximo experimento minimo que me da informacion nueva.\n"
+                        f"Si ya resolvi la tarea, deja de hacer tool calls y responde al usuario. "
+                        f"No es un limite duro — es un alto para no entrar en loop ciego.]"
                     ),
                 })
                 iter_count += 1

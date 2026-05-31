@@ -245,7 +245,7 @@ class PipelineTracker:
         if self.skills_loaded:
             parts.append(f"- Skills cargadas: {', '.join(sorted(self.skills_loaded))}")
         if self.last_deploy_unhealthy:
-            parts.append("- ULTIMO DEPLOY: FALLIDO (unhealthy) — diagnosticar antes de reintentar")
+            parts.append("- ULTIMO DEPLOY: FALLIDO (unhealthy) - diagnosticar antes de reintentar")
         parts.append(f"- Modo: {self.mode}")
         return "\n".join(parts)
 
