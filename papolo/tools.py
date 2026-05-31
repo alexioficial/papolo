@@ -76,18 +76,31 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "shell",
-            "description": "Ejecuta un comando de shell y devuelve stdout/stderr/exit code. Usar con cuidado.",
+            "description": (
+                "Ejecuta un comando de shell y devuelve stdout/stderr/exit code. "
+                "Pasa `timeout_seconds` con tu estimacion realista de cuanto deberia tardar "
+                "(internamente se multiplica x3 como margen de seguridad). "
+                "Si no pasas timeout, default es 60s (180s efectivos)."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "command": {"type": "string"},
                     "cwd": {"type": "string", "description": "Working directory opcional"},
+                    "timeout_seconds": {
+                        "type": "integer",
+                        "description": "Estimacion en segundos de cuanto tarda el comando. Se multiplica x3.",
+                    },
                 },
                 "required": ["command"],
             },
         },
     },
 ]
+
+SHELL_TIMEOUT_MULTIPLIER = 3
+SHELL_DEFAULT_ESTIMATE_SECONDS = 60
+SHELL_MAX_TIMEOUT_SECONDS = 60 * 60  # cap absoluto: 1h por comando
 
 
 def read_file(path: str) -> str:
@@ -109,16 +122,29 @@ def list_dir(path: str = ".") -> str:
     return "\n".join(entries) or "(empty)"
 
 
-def shell(command: str, cwd: str | None = None) -> str:
-    r = subprocess.run(
-        command,
-        shell=True,
-        capture_output=True,
-        text=True,
-        cwd=cwd,
-        timeout=120,
-        env=_safe_shell_env(),
-    )
+def shell(command: str, cwd: str | None = None,
+          timeout_seconds: int | None = None) -> str:
+    estimate = int(timeout_seconds) if timeout_seconds else SHELL_DEFAULT_ESTIMATE_SECONDS
+    if estimate <= 0:
+        estimate = SHELL_DEFAULT_ESTIMATE_SECONDS
+    effective = min(estimate * SHELL_TIMEOUT_MULTIPLIER, SHELL_MAX_TIMEOUT_SECONDS)
+    try:
+        r = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            timeout=effective,
+            env=_safe_shell_env(),
+        )
+    except subprocess.TimeoutExpired as e:
+        out = (e.stdout or "")[-2000:] if e.stdout else ""
+        err = (e.stderr or "")[-2000:] if e.stderr else ""
+        return (
+            f"exit_code: TIMEOUT (estimate={estimate}s, effective={effective}s)\n"
+            f"--- stdout (tail) ---\n{out}\n--- stderr (tail) ---\n{err}"
+        )
     return f"exit_code: {r.returncode}\n--- stdout ---\n{r.stdout}\n--- stderr ---\n{r.stderr}"
 
 

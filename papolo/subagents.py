@@ -103,7 +103,7 @@ def spawn_subagent(
     on_event=None,
 ) -> str:
     if max_iters is None:
-        max_iters = int(os.environ.get("PAPOLO_SUBAGENT_MAX_ITERS", "100"))
+        max_iters = int(os.environ.get("PAPOLO_SUBAGENT_MAX_ITERS", "0"))
 
     def emit(kind: str, payload: dict) -> None:
         if on_event is None:
@@ -161,7 +161,11 @@ def spawn_subagent(
             return DISPATCH[tname](**targs)
         return f"Tool desconocida: {tname}"
 
-    for _ in range(max_iters):
+    sub_iter = 0
+    while True:
+        if max_iters > 0 and sub_iter >= max_iters:
+            break
+        sub_iter += 1
         resp = client.chat.completions.create(
             model=sub_model,
             messages=messages,

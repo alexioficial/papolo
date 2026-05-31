@@ -246,6 +246,22 @@ def coolify_create_app(*, workspace_dir, conversation_uuid,
     return f"OK app creada.\nuuid: {app_uuid}\npreview_url: {fqdn}"
 
 
+def coolify_set_mongodb_env(*, workspace_dir, conversation_uuid, app_uuid):
+    """Setea MONGODB_URI en la app Coolify usando el URI del env del bot.
+    El valor NUNCA pasa por el modelo — se lee de PAPOLO_MONGODB_URI."""
+    if not COOLIFY_ENABLED:
+        return "ERROR: integracion Coolify no configurada"
+    uri = _env("PAPOLO_MONGODB_URI")
+    if not uri:
+        return "ERROR: PAPOLO_MONGODB_URI no esta configurado en el bot"
+    body = {"key": "MONGODB_URI", "value": uri, "is_build_time": False}
+    r = requests.post(_cf_url(f"/api/v1/applications/{app_uuid}/envs"),
+                       json=body, headers=_cf_headers(), timeout=20)
+    if r.status_code >= 300:
+        return f"ERROR coolify env ({r.status_code}): {r.text[:300]}"
+    return "OK MONGODB_URI inyectado en la app (valor oculto)"
+
+
 def coolify_set_env(*, workspace_dir, conversation_uuid,
                      app_uuid, key, value, is_build_time=False):
     if not COOLIFY_ENABLED:
@@ -381,6 +397,17 @@ _SCHEMAS_COOLIFY = [
         }},
     }},
     {"type": "function", "function": {
+        "name": "coolify_set_mongodb_env",
+        "description": (
+            "Inyecta MONGODB_URI en la app Coolify. El valor se toma del env "
+            "del bot (PAPOLO_MONGODB_URI) — vos NO pasas el URI ni lo conoces. "
+            "Usar antes de coolify_deploy en apps que necesitan Mongo."
+        ),
+        "parameters": {"type": "object", "required": ["app_uuid"], "properties": {
+            "app_uuid": {"type": "string"},
+        }},
+    }},
+    {"type": "function", "function": {
         "name": "coolify_deploy",
         "description": "Dispara un deploy de la app. Usar despues de coolify_create_app o despues de cambiar envs.",
         "parameters": {"type": "object", "required": ["app_uuid"], "properties": {
@@ -427,6 +454,7 @@ if COOLIFY_ENABLED:
     DEPLOY_DISPATCH.update({
         "coolify_create_app": coolify_create_app,
         "coolify_set_env": coolify_set_env,
+        "coolify_set_mongodb_env": coolify_set_mongodb_env,
         "coolify_deploy": coolify_deploy,
         "coolify_status": coolify_status,
         "coolify_destroy_app": coolify_destroy_app,

@@ -59,7 +59,7 @@ def _resolve_path_args(name: str, args: dict, workspace_dir: str | None) -> dict
 class Agent:
     system_prompt: str | None = None
     model: str = field(default_factory=model_name)
-    max_iters: int = field(default_factory=lambda: int(os.environ.get("PAPOLO_MAX_ITERS", "200")))
+    max_iters: int = field(default_factory=lambda: int(os.environ.get("PAPOLO_MAX_ITERS", "0")))
     messages: list = field(default_factory=list)
     workspace_dir: str | None = None
     conversation_uuid: str | None = None
@@ -120,7 +120,11 @@ class Agent:
                 except Exception:
                     pass
 
-        for _ in range(self.max_iters):
+        iter_count = 0
+        while True:
+            if self.max_iters > 0 and iter_count >= self.max_iters:
+                break
+            iter_count += 1
             resp = client.chat.completions.create(
                 model=self.model,
                 messages=self.messages,
