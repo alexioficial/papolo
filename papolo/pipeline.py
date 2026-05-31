@@ -25,28 +25,66 @@ class PipelineTracker:
     No hace inyeccion de tool_calls — todo se resuelve en _dispatch().
     """
 
+    # Modos de proyecto
+    MODE_CONVERSATION = "conversation"
+    MODE_SIMPLE_TOOL = "simple_tool"
+    MODE_FULL_SYSTEM = "full_system"
+
     def __init__(self, workspace_dir: Optional[str] = None):
         self.workspace_dir = workspace_dir
         self.skills_loaded: set[str] = set()
         self.planner_output: Optional[str] = None
         self.production_quality_loaded: bool = False
         self.production_check_passed: bool = False
-        self.is_build_task: bool = False
-        self.has_visual_ui: bool = False
+        self.mode: str = self.MODE_CONVERSATION
 
     # ── Deteccion ──────────────────────────────────────────────
 
     def detect_project_type(self, user_message: str):
-        """Detecta si es tarea de construir sistema y si tiene UI visual."""
+        """Detecta el modo del proyecto basado en el mensaje del usuario.
+
+        Tres modos:
+        - CONVERSATION: preguntas, consultas, busquedas. Sin codigo.
+        - SIMPLE_TOOL: landing, calculadora, generador. Sin auth/DB.
+        - FULL_SYSTEM: app multi-pagina con auth, DB, CRUD, roles.
+        """
         msg = user_message.lower()
-        self.is_build_task = any(kw in msg for kw in [
-            "construye", "crea un", "haz un", "sistema de", "app de",
-            "plataforma", "nuevo proyecto", "build", "develop",
-        ])
-        self.has_visual_ui = self.is_build_task and any(kw in msg for kw in [
-            "ui", "interfaz", "pagina", "dashboard", "frontend",
-            "sveltekit", "formulario", "landing", "crud", "visual",
-        ])
+
+        # Palabras que indican sistema completo
+        full_system_kw = [
+            "sistema de", "app con auth", "app con login", "app con roles",
+            "app con crud", "app con base de datos", "app con mongodb",
+            "plataforma de", "sistema completo", "api con", "backend con",
+            "dashboard con", "panel de administracion",
+        ]
+        # Palabras que indican herramienta simple
+        simple_tool_kw = [
+            "landing page", "pagina de aterrizaje", "calculadora",
+            "contador", "portafolio", "pagina personal", "generador",
+            "convertidor", "pagina de una sola", "pagina one-shot",
+            "pagina estatica", "pagina simple", "widget", "tool", "herramienta",
+            "pagina de", "pagina para",
+        ]
+        # Palabras que indican conversacion
+        conversation_kw = [
+            "que es", "como se", "puedes explicar", "busca en internet",
+            "investiga", "que opinas", "que sabes", "ayudame con",
+            "que significa", "dime sobre",
+        ]
+
+        if any(kw in msg for kw in full_system_kw):
+            self.mode = self.MODE_FULL_SYSTEM
+        elif any(kw in msg for kw in simple_tool_kw):
+            self.mode = self.MODE_SIMPLE_TOOL
+        elif any(kw in msg for kw in conversation_kw):
+            self.mode = self.MODE_CONVERSATION
+        else:
+            # Por defecto: si menciona construir/crear algo, asumir simple tool
+            # Si solo pregunta, asumir conversation
+            if any(kw in msg for kw in ["construye", "crea", "haz", "build"]):
+                self.mode = self.MODE_SIMPLE_TOOL
+            else:
+                self.mode = self.MODE_CONVERSATION
 
     # ── Mecanismo 1: Inyeccion de skills en spawn_subagent ─────
 
@@ -54,18 +92,30 @@ class PipelineTracker:
         """Skills que deben cargarse ANTES de spawnear este subagente.
 
         Devuelve lista vacia si no faltan skills.
-        Si devuelve skills, el caller debe cargarlas y devolver su contenido.
+        Segun el modo, requiere diferentes skills:
+        - FULL_SYSTEM: architecture + design + ux + ui-ux-pro-max
+        - SIMPLE_TOOL: solo professional-ui-design
+        - CONVERSATION: ninguna
         """
         if subagent_name in ("planner", ""):
             return []
+        if self.mode == self.MODE_CONVERSATION:
+            return []
 
         missing = []
-        if self.is_build_task and "system-architecture" not in self.skills_loaded:
-            missing.append("system-architecture")
-        if self.has_visual_ui and "professional-ui-design" not in self.skills_loaded:
+        # Ambos modos (simple tool y full system) necesitan diseño profesional
+        if "professional-ui-design" not in self.skills_loaded:
             missing.append("professional-ui-design")
-        if self.has_visual_ui and "ux-methodology" not in self.skills_loaded:
-            missing.append("ux-methodology")
+
+        # Solo full system necesita arquitectura y UX completo
+        if self.mode == self.MODE_FULL_SYSTEM:
+            if "system-architecture" not in self.skills_loaded:
+                missing.append("system-architecture")
+            if "ux-methodology" not in self.skills_loaded:
+                missing.append("ux-methodology")
+            if "ui-ux-pro-max" not in self.skills_loaded:
+                missing.append("ui-ux-pro-max")
+
         return missing
 
     def enrich_task(self, task: str) -> str:
