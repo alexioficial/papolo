@@ -41,8 +41,26 @@ Construir APIs FastAPI limpias, tipadas, performantes y testeables. Priorizar co
 5. Si toca DB, agregar/actualizar migracion Alembic.
 6. Sugerir un test minimo aunque no se pida.
 
-## Conexion a DB siempre lazy
-Si toca DB, NO conectes en el startup event ni al import. Usa singleton on-demand. Si la DB esta caida al boot, el container muere `exited:unhealthy`. Ver mongodb-expert para snippets.
+## Conexion a DB siempre lazy (REGLA DURA)
+
+NO conectes a la DB en `@app.on_event("startup")` ni en el `lifespan` context manager con `await connect()` eager. Si la DB tarda en responder al boot (Mongo cluster con cold start, network blip, DNS), el container queda colgado en startup, falla el healthcheck, Coolify lo marca `exited:unhealthy` o entra en loop `restarting:unknown`.
+
+Pattern correcto — singleton lazy:
+```python
+# app/db.py
+import os
+from motor.motor_asyncio import AsyncIOMotorClient
+_client = None
+def get_db():
+    global _client
+    if _client is None:
+        _client = AsyncIOMotorClient(os.environ["MONGODB_URI"], serverSelectionTimeoutMS=5000)
+    return _client[os.environ.get("MONGODB_DB_NAME", "app")]
+```
+
+En cada handler — `db = get_db(); await db.collection.find_one(...)`. La primera request paga el costo del connect; las siguientes reusan el pool.
+
+Si necesitas que `/health` reporte estado de DB, hacelo on-demand dentro del handler con timeout y try/except — nunca al startup.
 
 ## Formato de salida
 - Resumen breve del cambio.

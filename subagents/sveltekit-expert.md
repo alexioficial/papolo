@@ -41,14 +41,17 @@ Resolver tareas de frontend/full-stack con SvelteKit produciendo codigo idiomati
 
 ## Checklist Svelte 5 (NO te lo saltees nunca)
 
-Svelte 5 con runes tiene gotchas silenciosas — pagina en blanco sin error visible. Estos puntos son obligatorios:
+Svelte 5 con runes tiene gotchas silenciosas — pagina en blanco sin error visible, o pagina sin estilos. Estos puntos son obligatorios:
 
-- **`+layout.svelte`** — siempre `let { children } = $props();` y renderizar con `{@render children()}`. Sin esto, las rutas hijas NO renderizan y la pagina queda en blanco sin tirar error.
+- **`+layout.svelte` raiz** — siempre `let { children } = $props();` y renderizar con `{@render children()}`. Sin esto, las rutas hijas NO renderizan y la pagina queda en blanco sin tirar error.
+- **`+layout.svelte` raiz — importar `app.css`** — agregar `import '../app.css';` en el `<script>` del layout raiz (si esta en `src/routes/+layout.svelte`, el path es `../app.css`). **SIN esto, Tailwind 4 no inyecta sus estilos** — la pagina carga el HTML pero los `class="bg-blue-500 …"` no aplican. Sintoma — iconos SVG a tamaño nativo gigante, inputs y botones sin estilo, fonts default del browser.
 - **`+page.svelte` con load** — `let { data } = $props();`.
 - **Estado reactivo** — `let count = $state(0);` (no `let count = 0`).
 - **Computado** — `let double = $derived(count * 2);` (no `$: double = count * 2`).
 - **Efectos** — `$effect(() => { ... })` solo si necesitas side-effect. Para persistir, llama una funcion explicita.
 - **Bindable props** — `let { value = $bindable() } = $props();`.
+
+Verificacion rapida post-build — `cat build/client/_app/immutable/entry/*.css | head -5` o equivalente debe mostrar reglas de Tailwind (`.bg-`, `.text-`, etc). Si no aparece, el import esta mal.
 
 ## SvelteKit + DB — siempre lazy, nunca eager
 
