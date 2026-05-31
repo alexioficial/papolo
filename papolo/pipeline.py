@@ -38,6 +38,12 @@ class PipelineTracker:
         self.production_check_passed: bool = False
         self.mode: str = self.MODE_CONVERSATION
 
+        # Deploy failure tracking
+        self.deploy_attempts: dict[str, int] = {}
+        self.last_deploy_unhealthy: bool = False
+        self.unhealthy_app_uuid: str | None = None
+        self.deploy_consecutive_failures: int = 0
+
     # ── Deteccion ──────────────────────────────────────────────
 
     def detect_project_type(self, user_message: str):
@@ -142,6 +148,7 @@ class PipelineTracker:
                 )
 
         if name in ("coolify_deploy",):
+            # Gate: production-quality check
             if not self.production_check_passed:
                 if "production-quality" not in self.skills_loaded:
                     return (
@@ -153,7 +160,39 @@ class PipelineTracker:
                     "Corregi los FAILS antes de deployar."
                 )
 
+            # Gate: deploy unhealthy — forzar diagnostico antes de reintentar
+            app_uuid = args.get("app_uuid", "unknown")
+            attempts = self.deploy_attempts.get(app_uuid, 0)
+            if self.last_deploy_unhealthy:
+                if "debugging-systematic" not in self.skills_loaded:
+                    return (
+                        f"[PIPELINE] El deploy anterior (intento #{attempts}) termino en "
+                        "estado unhealthy. NO reintentes deploy sin diagnosticar la causa raiz.\n"
+                        "1. Carga 'debugging-systematic' con load_skill.\n"
+                        "2. Sigue su metodologia: verifica env vars, conexion lazy a DB, "
+                        "y agrega logging visible.\n"
+                        "3. Solo despues de diagnosticar, fixea y redeploya."
+                    )
+                # Hard cap: 3 intentos unhealthy maximo
+                if attempts >= 3:
+                    return (
+                        f"[PIPELINE] Ya intentaste deployar {attempts} veces y sigue "
+                        "unhealthy. No reintentes mas solo. Reporta al usuario:\n"
+                        f"- Estado actual de la app\n"
+                        f"- Que diagnosticaste hasta ahora\n"
+                        f"- Que informacion necesitas para resolverlo\n"
+                        "Pedi instrucciones explicitas."
+                    )
+
+            # Gate: falta MONGODB_URI si hay DB
+            if "MONGODB_URI" not in str(args) and not self._mongodb_env_set():
+                return None  # warning suave, no bloquea
+
         return None
+
+    def _mongodb_env_set(self) -> bool:
+        """Checkea si coolify_set_mongodb_env fue llamado en este workspace."""
+        return "coolify_set_mongodb_env" in str(self.skills_loaded)
 
     # ── Tracking de resultados ─────────────────────────────────
 
@@ -166,18 +205,71 @@ class PipelineTracker:
             self.skills_loaded.add(skill)
             if skill == "production-quality":
                 self.production_quality_loaded = True
+            # Cargar debugging-systematic resetea unhealthy flag
+            if skill == "debugging-systematic" and self.last_deploy_unhealthy:
+                self.last_deploy_unhealthy = False
 
         elif name == "spawn_subagent":
             if args.get("name") == "planner":
                 self.planner_output = result
+
+        elif name == "coolify_deploy":
+            app_uuid = args.get("app_uuid", "unknown")
+            self.deploy_attempts[app_uuid] = self.deploy_attempts.get(app_uuid, 0) + 1
+            # Si el resultado menciona unhealthy, marcarlo
+            if "unhealthy" in result.lower() or "failed" in result.lower():
+                self.last_deploy_unhealthy = True
+                self.unhealthy_app_uuid = app_uuid
+                self.deploy_consecutive_failures += 1
+
+        elif name == "coolify_status":
+            if "unhealthy" in result.lower() or "exited" in result.lower():
+                self.last_deploy_unhealthy = True
+            elif "running" in result.lower() and "healthy" in result.lower():
+                self.last_deploy_unhealthy = False
+                self.unhealthy_app_uuid = None
+                self.deploy_consecutive_failures = 0
 
         # Detectar si production-quality paso
         if self.production_quality_loaded and not self.production_check_passed:
             if "APTO PARA DEPLOY" in result or ("[PASS]" in result and "[FAIL]" not in result):
                 self.production_check_passed = True
 
+    def summary_for_subagent(self) -> str:
+        """Resumen del estado del pipeline para inyectar en system prompt de subagentes."""
+        parts = []
+        if self.production_check_passed:
+            parts.append("- production-quality check: PASSED")
+        else:
+            parts.append("- production-quality check: NOT PASSED")
+        if self.skills_loaded:
+            parts.append(f"- Skills cargadas: {', '.join(sorted(self.skills_loaded))}")
+        if self.last_deploy_unhealthy:
+            parts.append("- ULTIMO DEPLOY: FALLIDO (unhealthy) — diagnosticar antes de reintentar")
+        parts.append(f"- Modo: {self.mode}")
+        return "\n".join(parts)
+
     def _is_build_cmd(self, args: dict) -> bool:
-        cmd = args.get("command", "")
-        return bool(re.search(
-            r"\b(pnpm build|npm run build|cargo build|go build|uv build)\b", cmd
-        ))
+        cmd = args.get("command", "").strip()
+        # Normalizar whitespace para capturar redirects y flags
+        cmd = re.sub(r'\s+', ' ', cmd)
+
+        # npm/pnpm/yarn run build (y variantes build:*)
+        if re.search(
+            r'\b(?:npm run|pnpm(?: run)?|yarn(?: run)?)\s+\S*build\b',
+            cmd, re.IGNORECASE
+        ):
+            return True
+        # npx <tool> build — atrapa npx vite build, npx svelte-kit build, etc
+        if re.search(r'\bnpx\s+.*?\bbuild\b', cmd, re.IGNORECASE):
+            return True
+        # cargo/go/uv build
+        if re.search(r'\b(?:cargo|go|uv)\s+build\b', cmd, re.IGNORECASE):
+            return True
+        # node script que involucre build (vite, svelte-kit, esbuild, webpack)
+        if re.search(
+            r'\bnode\s+.*?\b(?:vite\s+build|svelte-kit\s+build|build\.(?:js|ts)|esbuild|webpack)\b',
+            cmd, re.IGNORECASE
+        ):
+            return True
+        return False

@@ -41,6 +41,7 @@ Resolver tareas que involucren MongoDB: modelado, queries, aggregations, perform
 - Evita `$regex` sin index (full collection scan).
 - No uses transactions cuando no son necesarias (cuestan performance).
 - Si el usuario pide algo que no es Mongo (cache, queue), proponé el recurso correcto en lugar de forzar Mongo.
+- **Nunca catch-ees errores de conexion sin propagarlos.** En apps web, los errores de DB deben ser visibles en la respuesta (login, health endpoint). "Credenciales invalidas" generico por fallo de conexion es el error mas costoso de Papolo — genera ciclos infinitos de debug del codigo de auth cuando el problema es conectividad.
 
 ## Procedimiento tipico
 1. Entender el modelo de dominio del usuario.

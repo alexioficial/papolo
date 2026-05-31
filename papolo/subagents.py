@@ -101,6 +101,7 @@ def spawn_subagent(
     workspace_dir: str | None = None,
     conversation_uuid: str | None = None,
     on_event=None,
+    pipeline_state: str = "",
 ) -> str:
     if max_iters is None:
         max_iters = int(os.environ.get("PAPOLO_SUBAGENT_MAX_ITERS", "0"))
@@ -129,6 +130,12 @@ def spawn_subagent(
             f"\n\nWorkspace asignado: `{workspace_dir}` (ya tiene `git init` hecho). "
             f"Paths relativos resuelven ahi. `shell` sin cwd corre ahi. "
             f"Usa git commit antes de cambios riesgosos para poder revertir."
+        )
+
+    if pipeline_state:
+        system_prompt += (
+            f"\n\n## Estado del pipeline (restricciones activas)\n"
+            f"{pipeline_state}\n"
         )
 
     client = get_client()

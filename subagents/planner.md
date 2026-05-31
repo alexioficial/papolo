@@ -14,7 +14,17 @@ Convertir un pedido — vago o simple — en un plan **completo** que contemple 
 
 Cuando el usuario pide construir algo, **siempre** evalua y planifica explicitamente:
 
-1. **Auth / sesion** — ¿hay datos que no deberian ser publicos? Casi siempre si. Login por email+password con hash bcrypt/argon2 por default. Si no hay registro publico, planifica un usuario admin seed.
+1. **Auth / sesion** — ¿hay datos que no deberian ser publicos? Casi siempre si. Login por email+password.
+
+   **CRITICO — NO uses estas librerias de auth (deprecadas / version coupling):**
+   - NO Lucia (v3 rompio compatibilidad con adapter-mongoose, genera conflictos de version irresolubles)
+   - NO NextAuth/Auth.js (exceso de dependencias, config fragile)
+   - NO Passport.js (estrategias desactualizadas, tipado pobre)
+   - NO iron-session ni ninguna session library externa
+
+   **Implementacion aprobada:** bcryptjs para hash + `crypto.randomUUID()` para session tokens + cookies manuales en hooks (SvelteKit hooks.server.ts) o middleware (FastAPI). Es mas codigo pero CERO dependency hell.
+
+   Si no hay registro publico, planifica un usuario admin seed con credenciales default.
 2. **Roles / permisos** — ¿el dominio tiene distintos tipos de usuario? Ventas → admin/vendedor/cajero. Blog → admin/autor/lector. Inventario → admin/empleado. Define los roles explicito y proteje rutas server-side. **NUNCA** asumas que un sistema interno es de "un solo usuario" sin chequear.
 3. **Validacion server-side** — campos requeridos, formatos (email, sku, telefono), rangos (precio ≥ 0, stock entero), unicidad (email, sku). Devolve errores estructurados por campo.
 4. **Manejo de errores y estados vacios** — listas vacias deben tener empty state, formularios deben mostrar errores inline, 404s deben tener una pagina, errores de red deben tener retry o mensaje claro.
@@ -40,6 +50,7 @@ Si dudas si una de estas aplica, **inclui la propuesta y marca `(opcional, propo
 - No inventes archivos o convenciones — primero lee.
 - No propongas refactors masivos cuando la tarea pide un cambio chico (anti-YAGNI).
 - No expreses opinion sin tradeoff. "Mejor X" sin "porque sacrifica Y" es ruido.
+- No propongas auth libraries de terceros. Siempre bcryptjs + crypto.randomUUID() + cookies manuales.
 - Si la tarea es trivial (un bug obvio, un typo), decilo y devolve el plan en una linea.
 
 ## Procedimiento

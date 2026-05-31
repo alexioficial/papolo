@@ -91,6 +91,72 @@ export async function load() {
 
 Si necesitas envar `db` por `event.locals`, hacelo en hooks pero con `try/catch` y dejando `event.locals.db = null` si falla.
 
+## Login / Auth — NUNCA silencies errores de DB (CRITICO)
+
+Este es el error MAS COSTOSO de Papolo: el login catch-ea todo y devuelve
+"Credenciales invalidas" aunque el error real sea que la DB esta caida.
+Esto genera decenas de iteraciones debuggeando auth cuando el problema
+es conectividad.
+
+REGLA: En form actions de login, los errores de conexion a DB NUNCA se
+traducen a "Credenciales invalidas". Distingui los casos:
+
+```ts
+export const actions = {
+  default: async ({ request, cookies }) => {
+    const data = await request.formData();
+    const email = data.get('email');
+
+    try {
+      const db = await getDb();
+      // ... auth logic ...
+    } catch (err) {
+      // Distinguir DB errors de auth errors
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('connect') || msg.includes('timed out') ||
+          msg.includes('ENOTFOUND') || msg.includes('Mongo')) {
+        return { error: `Error del servidor: No se pudo conectar a la base de datos. ${msg}`, dbError: true };
+      }
+      return { error: 'Credenciales invalidas' };
+    }
+  }
+};
+```
+
+## Health endpoint (OBLIGATORIO si usa DB)
+
+Toda app con DB debe incluir un endpoint `/api/health` sin autenticacion
+que permita diagnosticar conectividad post-deploy:
+
+```
+src/routes/api/health/+server.ts
+```
+
+```ts
+import { json } from '@sveltejs/kit';
+import { getDb } from '$lib/server/db';
+
+export async function GET() {
+  const checks: Record<string, string> = {};
+
+  try {
+    const db = await getDb();
+    await db.command({ ping: 1 });
+    checks.database = 'connected';
+  } catch (err) {
+    checks.database = `error: ${err instanceof Error ? err.message : String(err)}`;
+  }
+
+  const healthy = checks.database === 'connected';
+  return json(
+    { status: healthy ? 'healthy' : 'unhealthy', checks, timestamp: new Date().toISOString() },
+    { status: healthy ? 200 : 503 }
+  );
+}
+```
+
+Sin autenticacion, sin rate limit. Util para debugging post-deploy.
+
 ## Formato de salida
 - Resumen en 2-3 bullets de que cambio.
 - Diff conceptual de los puntos no triviales (no pegues archivos enteros si son largos).

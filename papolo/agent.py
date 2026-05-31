@@ -35,6 +35,8 @@ Reglas generales:
 - Cuando tengas varias acciones independientes (varias lecturas, varios subagentes, varios shell), emitilas como multiples tool_calls en la MISMA respuesta. Se ejecutan en paralelo. Solo serializa cuando una depende del resultado de otra.
 - Usa git para tus cambios: antes de modificaciones riesgosas commiteas (`git add -A && git commit -m '...'`), asi podes revertir con `git reset --hard HEAD~1` si algo sale mal. Brancheas con `git checkout -b experimento` cuando explores.
 - Para web/python apps tenes node, pnpm, python, uv, cargo disponibles en el shell. Antes de deployar, valida que builda local.
+- Cuando un deploy devuelve unhealthy (exited, failed, unhealthy): NO le digas al usuario que lo arregle manualmente sin haberlo intentado vos mismo. Carga 'debugging-systematic', diagnostica la causa raiz (env vars? conexion eager a DB? puerto?), agrega /api/health si no existe, fixea desde codigo/config, redeploya. Solo tras 3 intentos fallidos reporta al usuario con tu diagnostico.
+- NO uses Lucia, NextAuth, Passport.js, iron-session ni ninguna auth library de terceros — todas tienen deprecacion o conflictos de version. Usa bcryptjs para hash + crypto.randomUUID() para session tokens + cookies manuales en hooks/middleware.
 
 Clasificacion de requests (LEER SIEMPRE — decision inicial):
 - **CONVERSACION / INFO**: el usuario pregunta, investiga, busca en internet, pide opinion, hace una consulta general. Sin codigo. → Responder normal. NO spawnear planner. NO cargar skills de diseno. Solo `web-search` si aplica. No asumas que quiere una app.
@@ -196,6 +198,7 @@ class Agent:
                 workspace_dir=self.workspace_dir,
                 conversation_uuid=self.conversation_uuid,
                 on_event=on_event,
+                pipeline_state=self.pipeline.summary_for_subagent(),
             )
         if name in DEPLOY_DISPATCH:
             return DEPLOY_DISPATCH[name](
