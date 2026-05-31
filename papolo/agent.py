@@ -115,7 +115,10 @@ class Agent:
             if not on_event:
                 return
             with event_lock:
-                on_event(kind, payload)
+                try:
+                    on_event(kind, payload)
+                except Exception:
+                    pass
 
         for _ in range(self.max_iters):
             resp = client.chat.completions.create(
@@ -127,8 +130,9 @@ class Agent:
             self.messages.append(msg.model_dump(exclude_none=True))
 
             if not msg.tool_calls:
-                safe_event("final", msg.content or "")
-                return msg.content or ""
+                final = msg.content or ""
+                safe_event("final", {"content": final})
+                return final
 
             def run_call(call):
                 args = json.loads(call.function.arguments or "{}")
