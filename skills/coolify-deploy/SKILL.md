@@ -10,6 +10,15 @@ description: Como deployar un proyecto a Coolify — siempre Dockerfile, nunca n
 
 Razon — nixpacks adivina el start command y a veces le erra; docker-compose en Coolify trae problemas conocidos. Dockerfile escrito a mano es 100% deterministico.
 
+## REGLA NRO 2 (no negociable)
+**NUNCA bundlees un build de SvelteKit (adapter-static) adentro de otro backend (FastAPI/Express/Actix) servido con StaticFiles.** Eso rompe el SPA routing y termina en pagina en blanco. Sin excepciones.
+
+Si la app es full-stack tenes dos opciones validas — elegi una:
+- **(a) SvelteKit unico** — adapter-node + server routes + conexion directa a Mongo desde el server. Un solo deploy en port 3000. Es lo mas simple y rapido.
+- **(b) Frontend + backend separados** — SvelteKit con adapter-node en un deploy (port 3000), backend (FastAPI/Actix/etc) en otro deploy (port 8000/8080). Dos URLs, dos apps Coolify. El frontend hace `fetch` al backend.
+
+Si vas a meter logica de negocio compleja o necesitas Python/Rust para algo especifico — opcion (b). Sino — opcion (a).
+
 ## Cuando usar esta skill
 - Vas a llamar `coolify_create_app` por primera vez.
 - El usuario pide "deployalo", "subilo a coolify", "haceme un preview", etc.
