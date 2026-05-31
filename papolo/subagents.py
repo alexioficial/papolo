@@ -100,9 +100,17 @@ def spawn_subagent(
     depth: int = 1,
     workspace_dir: str | None = None,
     conversation_uuid: str | None = None,
+    on_event=None,
 ) -> str:
     if max_iters is None:
         max_iters = int(os.environ.get("PAPOLO_SUBAGENT_MAX_ITERS", "100"))
+
+    def emit(kind: str, payload: dict) -> None:
+        if on_event is None:
+            return
+        on_event(kind, {**payload, "subagent": name, "depth": depth})
+
+    emit("subagent_start", {"task": task})
     if depth > MAX_SUBAGENT_DEPTH:
         return (
             f"ERROR: limite de profundidad de subagentes ({MAX_SUBAGENT_DEPTH}) alcanzado. "
@@ -141,6 +149,7 @@ def spawn_subagent(
                 depth=depth + 1,
                 workspace_dir=workspace_dir,
                 conversation_uuid=conversation_uuid,
+                on_event=on_event,
             )
         if tname in DEPLOY_DISPATCH:
             return DEPLOY_DISPATCH[tname](
@@ -162,14 +171,18 @@ def spawn_subagent(
         messages.append(msg.model_dump(exclude_none=True))
 
         if not msg.tool_calls:
-            return msg.content or ""
+            final = msg.content or ""
+            emit("subagent_end", {"final": final[:200]})
+            return final
 
         def run_call(call):
             args = json.loads(call.function.arguments or "{}")
+            emit("tool_call", {"name": call.function.name, "args": args})
             try:
                 result = sub_dispatch(call.function.name, args)
             except Exception as e:
                 result = f"ERROR: {e}"
+            emit("tool_result", {"name": call.function.name, "result": str(result)[:300]})
             return call, result
 
         workers = min(len(msg.tool_calls), MAX_PARALLEL_TOOL_CALLS)
@@ -183,4 +196,5 @@ def spawn_subagent(
                 "content": str(result),
             })
 
+    emit("subagent_end", {"final": "[limite iters]"})
     return "[subagente alcanzo el limite de iteraciones]"

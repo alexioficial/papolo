@@ -83,7 +83,7 @@ class Agent:
     def all_tools(self):
         return TOOL_SCHEMAS + [SKILL_TOOL_SCHEMA, SUBAGENT_TOOL_SCHEMA] + DEPLOY_TOOL_SCHEMAS
 
-    def _dispatch(self, name: str, args: dict) -> str:
+    def _dispatch(self, name: str, args: dict, on_event=None) -> str:
         args = _resolve_path_args(name, args, self.workspace_dir)
         if name == "load_skill":
             return skill_tool_dispatch(**args)
@@ -94,6 +94,7 @@ class Agent:
                 depth=1,
                 workspace_dir=self.workspace_dir,
                 conversation_uuid=self.conversation_uuid,
+                on_event=on_event,
             )
         if name in DEPLOY_DISPATCH:
             return DEPLOY_DISPATCH[name](
@@ -133,10 +134,10 @@ class Agent:
                 args = json.loads(call.function.arguments or "{}")
                 safe_event("tool_call", {"name": call.function.name, "args": args})
                 try:
-                    result = self._dispatch(call.function.name, args)
+                    result = self._dispatch(call.function.name, args, on_event=safe_event)
                 except Exception as e:
                     result = f"ERROR: {e}"
-                safe_event("tool_result", {"name": call.function.name, "result": result})
+                safe_event("tool_result", {"name": call.function.name, "result": str(result)[:300]})
                 return call, result
 
             workers = min(len(msg.tool_calls), MAX_PARALLEL_TOOL_CALLS)
