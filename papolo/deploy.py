@@ -341,7 +341,14 @@ def coolify_status(*, workspace_dir, conversation_uuid, app_uuid):
     slim = {k: inner.get(k) for k in _STATUS_USEFUL_KEYS if inner.get(k) is not None}
     hint = ""
     if status.startswith("running"):
-        hint = "\nHINT: status empieza con 'running' → la app esta arriba. Reporta el URL al usuario y termina la tarea. No hagas mas tools."
+        hint = (
+            "\nHINT: la app esta 'running' pero puede estar sirviendo un build viejo "
+            "(Docker cache). Si el usuario reporta contenido incorrecto, no es un bug "
+            "del codigo — necesitas cache busting. No reintentes tools de deploy en "
+            "bucle. Mejor: (1) agrega un comentario unico en el Dockerfile (cache buster), "
+            "(2) commit y push, (3) coolify_deploy. Solo 1 intento. Si sigue igual, "
+            "reporta al usuario y pedile instrucciones."
+        )
     elif status.startswith("exited") or status.startswith("failed"):
         hint = "\nHINT: deploy fallo. Lee build/runtime logs (la API no los expone directo — fixea desde codigo o config y haz coolify_deploy denuevo). NO destruyas la app."
     return (

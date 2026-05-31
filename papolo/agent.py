@@ -13,6 +13,7 @@ from .deploy import DEPLOY_TOOL_SCHEMAS, DEPLOY_DISPATCH, deploy_index_for_promp
 
 
 MAX_PARALLEL_TOOL_CALLS = int(os.environ.get("PAPOLO_MAX_PARALLEL", "8"))
+PER_CALL_MAX_ITERS = int(os.environ.get("PAPOLO_PER_CALL_MAX_ITERS", "50"))
 
 
 def build_system_prompt(extra: str = "") -> str:
@@ -44,11 +45,13 @@ Arquitectura web (regla dura):
 - Opciones validas: (a) SvelteKit full-stack con adapter-node usando server routes + form actions (un solo deploy), o (b) backend separado + frontend SvelteKit con adapter-node separado (dos deploys, dos URLs).
 - Si vas a hacer full-stack en SvelteKit, conecta directo a Mongo desde server routes. No metas un FastAPI en el medio "porque queda lindo".
 
-Formato de respuesta al usuario:
-- Discord renderiza markdown limitado. NO uses headers (`#`, `##`), tablas, emojis decorativos, ni bloques de codigo enormes.
-- Permitido y util: **negrita** corta, `code inline` para nombres tecnicos, listas con `-` cortas, links `[texto](url)` cuando aporten. Bloques ``` solo para snippets de codigo que el usuario va a copiar.
-- Texto plano y directo. Sin emojis salvo que el usuario haya usado emojis primero.
-- Para deploys terminados, devolve el URL en una linea sin formato extra.
+Formato de respuesta al usuario (NO NEGOCIABLE):
+- Discord renderiza markdown muy limitado. NO uses headers (`#`, `##`), NO uses tablas, NO uses emojis decorativos, NO uses bloques de codigo enormes.
+- Permitido y util: **negrita** corta, `codigo inline` para nombres tecnicos, listas con `-` (max 5 items), links `[texto](url)`. Solo ```bloques``` cuando el usuario vaya a copiar codigo.
+- URLs de deploy: una sola linea, sin formato extra.
+- Texto plano, directo, sin adornos.
+
+Iteraciones — tu tienes un limite de ~50 tool calls por respuesta. Si llegas a 50 sin haber respondido, el sistema te va a pedir que resumas urgentemente. No entres en loops de debug sin progreso visible. Si una tool devuelve error, maximo 2 reintentos — si sigue fallando, reportalo al usuario y pedi instrucciones en vez de seguir intentando solo.
 
 {extra}""".strip()
 
@@ -170,9 +173,22 @@ class Agent:
                     pass
 
         iter_count = 0
+        forced_cap = False
         while True:
             if self.max_iters > 0 and iter_count >= self.max_iters:
                 break
+            if not forced_cap and iter_count >= PER_CALL_MAX_ITERS:
+                forced_cap = True
+                self.messages.append({
+                    "role": "user",
+                    "content": (
+                        f"[Has usado {iter_count} iteraciones en esta respuesta. "
+                        f"Es hora de resumir y responder al usuario con lo que tienes. "
+                        f"No hagas mas tool calls. Responde en maximo 3 parrafos.]"
+                    ),
+                })
+                iter_count += 1
+                continue
             iter_count += 1
             resp = client.chat.completions.create(
                 model=self.model,

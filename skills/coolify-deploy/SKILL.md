@@ -244,6 +244,24 @@ Despues de `coolify_deploy`, llama `coolify_status` en loop con `shell sleep 15`
 
 Solo destruis si el usuario lo pide explicitamente, o si el proyecto cambio tanto de stack que la app necesita rearmarse desde cero.
 
+## Cache busting (importante)
+
+A veces Coolify muestra `running:*` pero el contenido es de un build viejo. No es bug del codigo, es Docker cache que reuso un layer de `COPY . .`.
+
+**Antes de cada redeploy (push + coolify_deploy)** — agrega un comentario unico en el Dockerfile para invalidar cache:
+```dockerfile
+# DEPLOY 1 — <fecha-hora exacta>
+FROM node:20-slim AS builder
+```
+
+Sin esto, Docker ve el layer de `COPY . .` como identico (misma metadata de archivos compilados incluso si el source cambio — git no cambia los timestamps de checkout) y reusa cache. El comentario cambia el checksum del Dockerfile → Docker detecta cambio → rebuild completo.
+
+**Si ya deployaste y el contenido es stale:**
+1. Agrega comentario unico en Dockerfile. Pushea. `coolify_deploy`.
+2. Esperar 1-2 min. Testear el URL.
+3. Si sigue estaleado — 1 reintento mas. Si igual, PARAR y reportar al usuario.
+4. NO destruyas la app por cache stale. NO debuggees el codigo (el codigo nuevo esta en GitHub, el build esta viejo).
+
 ## Env vars (Coolify)
 
 `coolify_set_env(app_uuid, key, value)` y `coolify_set_mongodb_env(app_uuid)` setean **runtime** vars (no build-time). El endpoint hace upsert — si la key ya existe, la actualiza. Despues SIEMPRE llama `coolify_deploy` para que el container las tome.
@@ -259,6 +277,7 @@ Si una tool te devolvio error 422 o similar, NO la reintentes con los mismos arg
 | `running` pero el URL devuelve 502 | Puerto del CMD != `ports_exposes` de la app | `coolify_update_app(app_uuid, port=<correcto>)` + `coolify_deploy` |
 | `running` pero el URL devuelve "no such service" | DNS aun propagandose (raro con wildcard) | Esperar 30s, recargar |
 | `exited:unhealthy` | El container crashea al startup — falta env var critica, conexion eager a DB rota | Asegurate que las envs esten seteadas y el codigo conecte de forma **lazy** (no en el module-load) |
+| `running:*` pero el contenido visible NO coincide con el codigo recien pusheado | Docker cache stale — archivos compilados del build anterior | Agregar comentario unico en Dockerfile (cache buster), push, `coolify_deploy`. NO debuggees el codigo fuente. NO destruyas la app. |
 
 ## Cheat sheet
 1. Dockerfile siempre. Nunca nixpacks. Nunca docker-compose.
@@ -270,3 +289,5 @@ Si una tool te devolvio error 422 o similar, NO la reintentes con los mismos arg
 7. Cuando llegue a `running` — REPORTA EL URL y PARA. No rehagas nada.
 8. Para cambiar puerto/branch despues de crear — `coolify_update_app`, no destruir.
 9. Despues de `coolify_set_env` siempre `coolify_deploy`.
+10. Cada redeploy necesita cache buster en Dockerfile (comentario unico). Sin esto, Docker reusa build viejo.
+11. Si el contenido es stale despues de 2 intentos de redeploy con cache buster — PARA y reporta al usuario.
