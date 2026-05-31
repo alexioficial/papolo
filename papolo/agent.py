@@ -59,7 +59,7 @@ def _resolve_path_args(name: str, args: dict, workspace_dir: str | None) -> dict
 class Agent:
     system_prompt: str | None = None
     model: str = field(default_factory=model_name)
-    max_iters: int = field(default_factory=lambda: int(os.environ.get("PAPOLO_MAX_ITERS", "25")))
+    max_iters: int = field(default_factory=lambda: int(os.environ.get("PAPOLO_MAX_ITERS", "200")))
     messages: list = field(default_factory=list)
     workspace_dir: str | None = None
     conversation_uuid: str | None = None
@@ -150,7 +150,16 @@ class Agent:
                     "content": str(result),
                 })
 
-        return "[limite de iteraciones alcanzado]"
+        last_tools = []
+        for m in reversed(self.messages):
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                last_tools = [tc["function"]["name"] for tc in m["tool_calls"]]
+                break
+        tail = ", ".join(last_tools) if last_tools else "?"
+        return (
+            f"[limite de {self.max_iters} iteraciones alcanzado. "
+            f"Ultimas tools: {tail}. Subi PAPOLO_MAX_ITERS si la tarea es legitima.]"
+        )
 
 
 def run_agent(user_message: str, system_prompt: str | None = None) -> str:

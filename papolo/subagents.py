@@ -96,11 +96,13 @@ def _resolve_path_args(name: str, args: dict, workspace_dir: str | None) -> dict
 def spawn_subagent(
     name: str,
     task: str,
-    max_iters: int = 15,
+    max_iters: int | None = None,
     depth: int = 1,
     workspace_dir: str | None = None,
     conversation_uuid: str | None = None,
 ) -> str:
+    if max_iters is None:
+        max_iters = int(os.environ.get("PAPOLO_SUBAGENT_MAX_ITERS", "100"))
     if depth > MAX_SUBAGENT_DEPTH:
         return (
             f"ERROR: limite de profundidad de subagentes ({MAX_SUBAGENT_DEPTH}) alcanzado. "
