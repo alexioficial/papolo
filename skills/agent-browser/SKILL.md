@@ -36,7 +36,51 @@ Si esto falla (permisos de npm global, o faltan libs de Chrome en el VPS como `l
 
 No mientas diciendo que testeaste si no pudiste.
 
-## 1. Readiness — esperar que la preview resuelva
+## EL FLUJO QUE AHORRA DEPLOYS: smoke test LOCAL primero
+
+Cada deploy a Coolify cuesta build + push + 45-80s de espera. Si iteras testeando SOLO contra la preview, cada bug = un deploy nuevo (asi se llega a 9 deploys y 25 min). **La regla pro: itera LOCAL, deploya UNA vez.**
+
+Antes del primer deploy, levanta la app en el VPS contra un Mongo local efimero y corre el smoke test completo contra `localhost`. Arregla TODOS los bugs ahi (en segundos, sin deploys). Recien cuando el smoke local pasa, deployas una vez y haces un solo smoke de confirmacion contra la preview.
+
+```bash
+WS=/data/workspaces/<workspace>     # tu workspace
+cd "$WS"
+
+# 1. Mongo local efimero (reusa si ya existe; docker esta en el VPS)
+docker start papolo-test-mongo 2>/dev/null || \
+  docker run -d --name papolo-test-mongo -p 27017:27017 mongo:7 >/dev/null
+
+# 2. Build local (catchea errores de build/sintaxis Svelte sin deployar)
+npm run build 2>&1 | tail -20   # si falla, fixea ACA, no deployando
+
+# 3. Correr la app local con DB de prueba. nohup para que sobreviva entre shell calls.
+#    Pasas MONGODB_URI/MONGODB_DB_NAME inline — el shell del bot filtra el de produccion,
+#    pero vos seteas uno LOCAL para el test.
+nohup env MONGODB_URI="mongodb://localhost:27017" MONGODB_DB_NAME="smoketest" \
+  PORT=3000 SEED_TOKEN="local" SEED_ENABLED=1 node build > /tmp/papolo-app.log 2>&1 &
+echo "APP_PID=$!"
+
+# 4. esperar health local
+for i in $(seq 1 15); do curl -sf localhost:3000/api/health >/dev/null 2>&1 && break; sleep 2; done
+curl -s localhost:3000/api/health    # debe decir db: connected
+
+# 5. seed local
+curl -s -X POST localhost:3000/api/_seed -H "x-seed-token: local"
+
+# 6. smoke test con agent-browser contra LOCALHOST (mismo procedimiento que secciones 3-6,
+#    pero PREVIEW=http://localhost:3000). Itera-arregla-rebuildea LOCAL hasta PASS.
+#    Si cambiaste codigo: kill el node, npm run build, relanza node build. Sin deploys.
+
+# 7. cleanup al terminar el smoke local
+kill $(cat /tmp/papolo-app.pid 2>/dev/null) 2>/dev/null; pkill -f "node build" 2>/dev/null
+# dejá el container mongo corriendo para reusarlo en la proxima app (mas rapido)
+```
+
+Si docker NO esta disponible o el `node build` local no levanta (raro en el VPS), degrada al flujo clasico (testear contra la preview deployada). Pero intenta local primero: es la diferencia entre 2 y 9 deploys.
+
+**Regla de oro:** NO deployas hasta que el smoke test LOCAL este en verde. El deploy es para publicar algo que YA sabes que funciona, no para descubrir si funciona.
+
+## 1. Readiness — esperar que la preview resuelva (flujo contra preview)
 
 El DNS de la preview (`https://<short>.<dominio>`) puede tardar en propagar tras el deploy. Espera antes de abrir el navegador:
 
@@ -125,16 +169,17 @@ PASS = TODAS las señales aplicables en verde. Recien ahi reporta el preview URL
 1. NO digas que funciona. Carga `debugging-systematic`.
 2. Aisla la capa que falla de abajo hacia arriba: DB (`/api/health`) → seed → query → render. El bug casi siempre esta mas abajo de lo que parece.
 3. Patron mas comun: **login falla con creds correctas → es conexion DB, no auth.**
-4. Fixea desde codigo/config, redeploya, y volve a correr el smoke test.
-5. Maximo 2 reintentos. Si sigue fallando, reporta al usuario con el screenshot y tu diagnostico concreto, y pedi instrucciones.
+4. Si estas en el loop LOCAL: fixea, `npm run build`, relanza `node build`, re-testea. SIN deploy. Esto es lo que ahorra deploys — itera local hasta verde.
+5. Maximo 2 reintentos del mismo approach. Si sigue fallando, reporta al usuario con el screenshot y tu diagnostico concreto, y pedi instrucciones.
 
 ## Cheat sheet
 
-1. Bootstrap best-effort — si Chrome no instala, degrada con gracia, no bloquees.
-2. Readiness loop (`curl` con reintentos) ANTES de abrir el navegador (DNS tarda).
+1. **LOCAL primero.** Levanta la app contra un Mongo docker local y corre el smoke test contra `localhost:3000` ANTES de deployar. Itera-arregla-rebuildea local (segundos, cero deploys). Deploya UNA vez cuando el local pasa.
+2. Bootstrap best-effort — si Chrome no instala, degrada con gracia, no bloquees.
 3. Sembra la test DB con mock data ANTES de testear — app vacia parece rota.
-4. El seed corre dentro del container via `curl /api/_seed` — vos nunca tocas el MONGODB_URI.
-5. Creds sembradas siempre `test@papolo.dev` / `Test1234!` — hash con el MISMO bcryptjs que el login.
+4. Creds sembradas siempre `test@papolo.dev` / `Test1234!` — hash con el MISMO bcryptjs que el login.
+5. En el flujo contra preview: readiness loop (`curl` con reintentos) antes de abrir el navegador (DNS tarda).
+6. El seed corre dentro del container via `curl /api/_seed` — vos nunca tocas el MONGODB_URI de produccion.
 6. `wait --load networkidle` SIEMPRE antes de `snapshot`.
 7. Usa `--json` para parsear los refs (@e1) de forma confiable.
 8. `errors` vacio es requisito de PASS.

@@ -29,7 +29,7 @@ Resolver tareas de frontend/full-stack con SvelteKit produciendo codigo idiomati
 - No instales paquetes sin justificacion. Si el pedido se resuelve con stdlib de SvelteKit, no agregues deps.
 - No mezcles sintaxis Svelte 4 con Svelte 5 en el mismo archivo. Si el repo usa runes, todo nuevo es runes.
 - No uses `goto` cuando un `<a href>` o `<form action>` resuelve mejor (preserva accesibilidad y no-JS).
-- No uses `onMount` para cosas que deberian estar en `+page.ts` load.
+- **Carga datos con server `load` functions (`+page.server.ts`), NUNCA con `fetch('/api/...')` client-side en `onMount`/`$effect`.** El server load corre server-side con la sesion ya resuelta en `event.locals` — los datos llegan en el primer render, sin problemas de cookies. El patron client-fetch rompe tipico: el dashboard muestra "Error al cargar datos" porque el fetch del browser no manda bien las cookies de sesion, o porque corre antes de que la sesion este lista. Es la causa nro 1 de "deployé y el dashboard no carga". Si necesitas refetch reactivo (filtros, paginacion), ahi si fetch client-side, pero la carga INICIAL siempre por server load.
 - No expongas secrets en codigo client. Variables `PUBLIC_*` son cliente, el resto solo server.
 
 ## Procedimiento
@@ -52,6 +52,20 @@ Svelte 5 con runes tiene gotchas silenciosas — pagina en blanco sin error visi
 - **Bindable props** — `let { value = $bindable() } = $props();`.
 
 Verificacion rapida post-build — `cat build/client/_app/immutable/entry/*.css | head -5` o equivalente debe mostrar reglas de Tailwind (`.bg-`, `.text-`, etc). Si no aparece, el import esta mal.
+
+## Scaffold inicial — incluí TODO esto en el PRIMER build (no reactivo)
+
+Cada deploy cuesta minutos. Un deploy que falla por algo que deberia haber estado desde el inicio es un deploy desperdiciado. El primer build de una app full-stack con DB DEBE incluir, de entrada:
+
+- [ ] `adapter-node` configurado en `svelte.config.js` (no adapter-auto ni static).
+- [ ] `src/lib/server/db.ts` con conexion **lazy** y `dbName: process.env.MONGODB_DB_NAME ?? 'app'` (ver abajo — Mongoose ignora la env var sin esto).
+- [ ] `/api/health` que pingea la DB (para diagnostico post-deploy y healthcheck).
+- [ ] `/api/_seed` con mock data determinista (creds `test@papolo.dev` / `Test1234!`, fechas relativas a hoy).
+- [ ] Carga de datos inicial via server `load` (`+page.server.ts`), NO client-fetch (rompe con cookies).
+- [ ] `hooks.server.ts` que resuelve la sesion en `event.locals` y protege rutas.
+- [ ] Dockerfile con `ENV PORT=3000` y `CMD ["node","build"]`, mas un comentario cache-buster.
+
+Si generas estos 7 desde el inicio, el primer deploy levanta sano y el smoke test pasa sin rondas de fix-redeploy.
 
 ## SvelteKit + DB — siempre lazy, nunca eager
 
