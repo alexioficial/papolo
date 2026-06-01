@@ -75,6 +75,22 @@ export async function getDb(): Promise<Db> {
 }
 ```
 
+**Si usas Mongoose** (models con schemas): el connection string NO trae el nombre de DB, asi que DEBES pasar `dbName` explicito o Mongoose cae en `test` e ignora `MONGODB_DB_NAME` — rompiendo el aislamiento por app y el smoke test (el seed escribe en una DB y la app lee de otra):
+```ts
+// src/lib/server/db.ts (Mongoose)
+import mongoose from 'mongoose';
+let _conn: Promise<typeof mongoose> | null = null;
+export function getDB() {
+  if (!_conn) {
+    _conn = mongoose.connect(process.env.MONGODB_URI!, {
+      dbName: process.env.MONGODB_DB_NAME ?? 'app',   // SIN esto, Mongoose usa 'test'
+      serverSelectionTimeoutMS: 5000,
+    });
+  }
+  return _conn;
+}
+```
+
 En `+page.server.ts`:
 ```ts
 import { getDb } from '$lib/server/db';
@@ -201,6 +217,8 @@ Reglas:
 - El password del usuario de prueba se hashea con el MISMO bcryptjs que el login.
 - `SEED_ENABLED=1` y `SEED_TOKEN=<valor>` los setea Papolo via `coolify_set_env` (no son secretos del sistema, los genera el).
 - Credenciales sembradas SIEMPRE `test@papolo.dev` / `Test1234!` (deterministas, asi el smoke test sabe con que loguearse).
+- **Fechas RELATIVAS a hoy, nunca hardcodeadas.** Si el dominio tiene dashboards "de este mes / esta semana", sembra registros con fechas dentro del periodo actual (`new Date()`, restar dias/meses), sino esos paneles salen en $0 aunque la DB tenga data. Ej: `new Date(Date.now() - 3*24*60*60*1000)` para "hace 3 dias". Mezcla algunas de este mes y otras de meses previos para que los totales tengan sentido.
+- **No upsertees contra un campo unique que no seteas.** Si el schema tiene un index unique (ej. `username`, `sku`), o lo seteas en el seed, o no lo declares unique. Sino el segundo upsert tira `E11000 dup key { campo: null }`.
 
 ## Formato de salida
 - Resumen en 2-3 bullets de que cambio.
