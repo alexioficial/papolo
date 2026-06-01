@@ -169,13 +169,19 @@ class PipelineTracker:
             app_uuid = args.get("app_uuid", "unknown")
             attempts = self.deploy_attempts.get(app_uuid, 0)
             if self.last_deploy_unhealthy:
-                if "debugging-systematic" not in self.skills_loaded:
+                # El PRIMER unhealthy (solo 1 deploy previo) suele ser un transitorio del
+                # primer deploy de Coolify (la app arranca local; un redeploy con el mismo
+                # codigo queda running). Permitimos UN redeploy sin el detour de diagnostico,
+                # SIEMPRE que el modelo haya verificado arranque local (node build).
+                # Recien si el SEGUNDO deploy tambien queda unhealthy, forzamos diagnostico.
+                if attempts >= 2 and "debugging-systematic" not in self.skills_loaded:
                     return (
-                        f"[PIPELINE] El deploy anterior (intento #{attempts}) termino en "
-                        "estado unhealthy. NO reintentes deploy sin diagnosticar la causa raiz.\n"
+                        f"[PIPELINE] Van {attempts} deploys y sigue unhealthy — ya no es el "
+                        "transitorio del primer deploy, hay un problema real. NO reintentes "
+                        "sin diagnosticar.\n"
                         "1. Carga 'debugging-systematic' con load_skill.\n"
-                        "2. Sigue su metodologia: verifica env vars, conexion lazy a DB, "
-                        "y agrega logging visible.\n"
+                        "2. Verifica: arranca local (`npm run build` + `timeout 6 node build`)? "
+                        "envs seteadas? conexion lazy a DB? puerto correcto?\n"
                         "3. Solo despues de diagnosticar, fixea y redeploya."
                     )
                 # Hard cap: 3 intentos unhealthy maximo
