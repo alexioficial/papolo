@@ -36,47 +36,46 @@ Si esto falla (permisos de npm global, o faltan libs de Chrome en el VPS como `l
 
 No mientas diciendo que testeaste si no pudiste.
 
-## EL FLUJO QUE AHORRA DEPLOYS: smoke test LOCAL primero
+## PASO 0 (ahorra deploys): chequeo de ARRANQUE local antes de deployar
 
-Cada deploy a Coolify cuesta build + push + 45-80s de espera. Si iteras testeando SOLO contra la preview, cada bug = un deploy nuevo (asi se llega a 9 deploys y 25 min). **La regla pro: itera LOCAL, deploya UNA vez.**
+Cada deploy a Coolify cuesta build + push + 45-80s de espera. La causa nro 1 de deploys desperdiciados es deployar codigo que ni siquiera arranca (build roto, crash al boot). Eso lo catcheas LOCAL en segundos, sin deployar.
 
-Antes del primer deploy, levanta la app en el VPS contra un Mongo local efimero y corre el smoke test completo contra `localhost`. Arregla TODOS los bugs ahi (en segundos, sin deploys). Recien cuando el smoke local pasa, deployas una vez y haces un solo smoke de confirmacion contra la preview.
+IMPORTANTE sobre el entorno del bot: **NO hay docker ni una DB local** en el shell del bot, y el `MONGODB_URI` de produccion esta filtrado. Asi que NO podes correr el full-stack con DB localmente. Pero SI podes verificar que la app **buildee y arranque** — que es lo que catchea los crashes de boot:
 
 ```bash
-WS=/data/workspaces/<workspace>     # tu workspace
-cd "$WS"
+WS=/data/workspaces/<workspace>; cd "$WS"
 
-# 1. Mongo local efimero (reusa si ya existe; docker esta en el VPS)
-docker start papolo-test-mongo 2>/dev/null || \
-  docker run -d --name papolo-test-mongo -p 27017:27017 mongo:7 >/dev/null
+# 1. Build local — catchea errores de build/sintaxis Svelte SIN deployar.
+npm run build 2>&1 | tail -20      # si falla, fixea ACA, no deployando.
 
-# 2. Build local (catchea errores de build/sintaxis Svelte sin deployar)
-npm run build 2>&1 | tail -20   # si falla, fixea ACA, no deployando
-
-# 3. Correr la app local con DB de prueba. nohup para que sobreviva entre shell calls.
-#    Pasas MONGODB_URI/MONGODB_DB_NAME inline — el shell del bot filtra el de produccion,
-#    pero vos seteas uno LOCAL para el test.
-nohup env MONGODB_URI="mongodb://localhost:27017" MONGODB_DB_NAME="smoketest" \
-  PORT=3000 SEED_TOKEN="local" SEED_ENABLED=1 node build > /tmp/papolo-app.log 2>&1 &
-echo "APP_PID=$!"
-
-# 4. esperar health local
-for i in $(seq 1 15); do curl -sf localhost:3000/api/health >/dev/null 2>&1 && break; sleep 2; done
-curl -s localhost:3000/api/health    # debe decir db: connected
-
-# 5. seed local
-curl -s -X POST localhost:3000/api/_seed -H "x-seed-token: local"
-
-# 6. smoke test con agent-browser contra LOCALHOST (mismo procedimiento que secciones 3-6,
-#    pero PREVIEW=http://localhost:3000). Itera-arregla-rebuildea LOCAL hasta PASS.
-#    Si cambiaste codigo: kill el node, npm run build, relanza node build. Sin deploys.
-
-# 7. cleanup al terminar el smoke local
-kill $(cat /tmp/papolo-app.pid 2>/dev/null) 2>/dev/null; pkill -f "node build" 2>/dev/null
-# dejá el container mongo corriendo para reusarlo en la proxima app (mas rapido)
+# 2. Arranque local — confirma que el server levanta y sirve (sin DB).
+#    El /api/health NO debe requerir DB para responder (asi distingue "arranco" de "DB caida").
+timeout 6 node build 2>&1 | head -5    # debe imprimir "Listening on http://0.0.0.0:3000"
 ```
 
-Si docker NO esta disponible o el `node build` local no levanta (raro en el VPS), degrada al flujo clasico (testear contra la preview deployada). Pero intenta local primero: es la diferencia entre 2 y 9 deploys.
+Si esos dos pasan, el codigo arranca sano → el deploy no va a fallar por boot/build. (El testeo de login+DB+dashboard se hace despues contra la preview deployada, porque no hay Mongo local — ver abajo.) Si el deploy igual da `exited:unhealthy` pese a que arranca local, ver la nota en la skill `coolify-deploy`: suele ser transitorio del primer deploy.
+
+## Smoke test por API con curl (METODO PRIMARIO Y CONFIABLE)
+
+Chrome headless en el VPS del bot es **poco confiable** (faltan libs del sistema, el entorno es efimero y no siempre tenes apt para instalarlas). Por eso el smoke test **primario** es por API con curl — siempre funciona, no depende de Chrome, y verifica el sistema de punta a punta con la sesion real. agent-browser (secciones 3-6) es el extra "lindo" cuando Chrome arranca; el curl-smoke es el que NO podes saltearte.
+
+Despues de deployar y sembrar (`POST /api/_seed`), corre esto contra la preview:
+
+```bash
+P="https://<short>.<dominio>"
+# 1. login → captura la cookie de sesion en un cookie jar
+curl -s -c /tmp/cj.txt -X POST "$P/api/auth/login" -H 'Content-Type: application/json' \
+  -d '{"email":"<email-sembrado>","password":"<pass-sembrada>"}'   # debe devolver ok:true
+# 2. probar CADA endpoint protegido con la cookie — todos deben dar 2xx con datos reales
+for ep in auth/me dashboard transactions accounts categories reports; do
+  printf "%-14s " "$ep:"; curl -sf -b /tmp/cj.txt "$P/api/$ep" -o /dev/null && echo PASS || echo FAIL
+done
+# 3. render: la pagina protegida SSR-ea con datos (no en blanco, no template)
+curl -sf -b /tmp/cj.txt "$P/dashboard" | grep -q "Dashboard" && echo "render PASS" || echo "render FAIL"
+curl -sf "$P/login" | grep -q "Iniciar sesion" && echo "login-page PASS" || echo "login-page FAIL"
+```
+
+Criterio: TODOS PASS, con datos sembrados visibles en las respuestas (no listas vacias). Si el login da ok pero un endpoint da FAIL → diagnostica esa capa (DB/query), no el login. Esto reemplaza el smoke visual cuando Chrome no corre, y es suficiente para afirmar "funciona" con evidencia.
 
 **Regla de oro:** NO deployas hasta que el smoke test LOCAL este en verde. El deploy es para publicar algo que YA sabes que funciona, no para descubrir si funciona.
 
@@ -174,18 +173,14 @@ PASS = TODAS las señales aplicables en verde. Recien ahi reporta el preview URL
 
 ## Cheat sheet
 
-1. **LOCAL primero.** Levanta la app contra un Mongo docker local y corre el smoke test contra `localhost:3000` ANTES de deployar. Itera-arregla-rebuildea local (segundos, cero deploys). Deploya UNA vez cuando el local pasa.
-2. Bootstrap best-effort — si Chrome no instala, degrada con gracia, no bloquees.
+1. **Chequeo de arranque LOCAL antes de deployar**: `npm run build` + `timeout 6 node build` (debe decir "Listening on 3000"). Catchea build roto / crash al boot sin gastar un deploy. NO hay docker ni Mongo local, asi que el DB-flow se testea despues contra la preview.
+2. **El smoke test PRIMARIO es por API con curl** (login → cookie → cada endpoint → render). Siempre funciona, no depende de Chrome. agent-browser es el extra cuando Chrome arranca.
 3. Sembra la test DB con mock data ANTES de testear — app vacia parece rota.
-4. Creds sembradas siempre `test@papolo.dev` / `Test1234!` — hash con el MISMO bcryptjs que el login.
-5. En el flujo contra preview: readiness loop (`curl` con reintentos) antes de abrir el navegador (DNS tarda).
+4. Si el login da ok pero un endpoint da FAIL → es esa capa (DB/query), no el login.
+5. agent-browser (Chrome) es best-effort: si no instala/no arranca por libs del sistema, NO bloquees — el curl-smoke ya cubre el caso. No mientas diciendo que testeaste visual si no pudiste.
 6. El seed corre dentro del container via `curl /api/_seed` — vos nunca tocas el MONGODB_URI de produccion.
-6. `wait --load networkidle` SIEMPRE antes de `snapshot`.
-7. Usa `--json` para parsear los refs (@e1) de forma confiable.
-8. `errors` vacio es requisito de PASS.
-9. Screenshot `--full` como evidencia.
-10. `agent-browser close` al final, siempre.
-11. En FAIL: diagnostica DB primero (`/api/health`), nunca el login a ciegas.
+7. Si usas agent-browser: `wait --load networkidle` antes de `snapshot`, `--json` para los refs, `errors` vacio requisito de PASS, screenshot `--full`, `close` al final.
+8. PASS = login + todos los endpoints con datos sembrados + render con contenido real. Recien ahi reporta el URL.
 
 ## Formato de salida
 

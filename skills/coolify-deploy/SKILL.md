@@ -276,7 +276,8 @@ Si una tool te devolvio error 422 o similar, NO la reintentes con los mismos arg
 | `building` >5 min | Build lento (rust, big node_modules) | Esperar mas, hasta 8 min |
 | `running` pero el URL devuelve 502 | Puerto del CMD != `ports_exposes` de la app | `coolify_update_app(app_uuid, port=<correcto>)` + `coolify_deploy` |
 | `running` pero el URL devuelve "no such service" | DNS aun propagandose (raro con wildcard) | Esperar 30s, recargar |
-| `exited:unhealthy` | El container crashea al startup — falta env var critica, conexion eager a DB rota | Asegurate que las envs esten seteadas y el codigo conecte de forma **lazy** (no en el module-load) |
+| `exited:unhealthy` en el PRIMER deploy, pero la app arranca local | **Casi siempre transitorio del primer build en Coolify** (healthcheck corre antes de que el container este listo). Patron observado: redeploy con el MISMO codigo queda `running`. | 1. Verifica local que arranca: `npm run build` + `timeout 6 node build` (debe decir "Listening on 3000"). 2. Si arranca local, NO es bug de codigo: bump el cache buster del Dockerfile, push, `coolify_deploy` UNA vez. 3. Suele quedar `running`. NO entres en debugging profundo si el codigo arranca local. |
+| `exited:unhealthy` que PERSISTE tras redeploy | El container si crashea — falta env var critica, conexion eager a DB, o el CMD/puerto mal | Verifica local primero. Asegurate envs seteadas y conexion **lazy** (no en module-load). Si local arranca pero deployado no, revisa que `coolify_set_mongodb_env` corrio y el puerto coincida. |
 | `running:*` pero el contenido visible NO coincide con el codigo recien pusheado | Docker cache stale — archivos compilados del build anterior | Agregar comentario unico en Dockerfile (cache buster), push, `coolify_deploy`. NO debuggees el codigo fuente. NO destruyas la app. |
 
 ## Cheat sheet
