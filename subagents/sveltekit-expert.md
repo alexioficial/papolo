@@ -50,6 +50,18 @@ Svelte 5 con runes tiene gotchas silenciosas — pagina en blanco sin error visi
 - **Computado** — `let double = $derived(count * 2);` (no `$: double = count * 2`).
 - **Efectos** — `$effect(() => { ... })` solo si necesitas side-effect. Para persistir, llama una funcion explicita.
 - **Bindable props** — `let { value = $bindable() } = $props();`.
+- **NUNCA `redirect()` en el cliente (mata la hidratacion → PAGINA EN BLANCO).** `redirect()` de `@sveltejs/kit` SOLO funciona en server `load` / form `actions` — tira una excepcion por diseño. Si la llamas en un `$effect`, en el `<script>` de un `.svelte`, o en un handler de cliente, la excepcion mata la hidratacion y la pagina queda en blanco SIN error de consola obvio. Para gating de auth: hacelo en `+layout.server.ts` / `+page.server.ts` (server load). Para navegar desde el cliente (ej. tras una accion): usa `goto('/ruta')` de `$app/navigation`, NUNCA `redirect()`.
+- **`use:enhance` con callback custom DEBE llamar `update()` o `applyAction(result)`.** Si pasas un callback a `use:enhance={() => { ...; return async ({ result }) => { ... } }}` y NO llamas `update()` ni `applyAction(result)`, ANULAS el comportamiento default: los `redirect()` del action NO se siguen y el resultado de exito se traga silenciosamente (el usuario submitea, el server hace el trabajo, pero la UI no muestra exito ni redirige → el usuario reintenta y rompe). Patron correcto:
+  ```svelte
+  <form method="POST" use:enhance={() => {
+    submitting = true;
+    return async ({ result, update }) => {
+      submitting = false;
+      await update();              // sigue redirects + aplica el form result. OBLIGATORIO.
+    };
+  }}>
+  ```
+  Si solo querias mostrar errores inline, igual llama `await update()` — el `form` prop se actualiza solo. Lo MAS simple y seguro: `use:enhance` SIN callback (default ya sigue redirects y actualiza `form`). Pasa callback solo si necesitas el spinner; y ahi `update()` es no-negociable.
 
 Verificacion rapida post-build — `cat build/client/_app/immutable/entry/*.css | head -5` o equivalente debe mostrar reglas de Tailwind (`.bg-`, `.text-`, etc). Si no aparece, el import esta mal.
 

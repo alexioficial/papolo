@@ -140,6 +140,8 @@ Si el sistema usa DB:
 - [ ] El build produce `build/server/` y `build/client/` con contenido real
 - [ ] El Dockerfile usa el package manager correcto (pnpm vs npm segun lockfile)
 - [ ] Las env vars necesarias estan seteadas en Coolify (MONGODB_URI, etc)
+- [ ] **NO hay `redirect()` llamado desde cliente** (mata hidratacion → pagina en blanco). Grep: `grep -rn "redirect(" src/routes --include="*.svelte"` debe dar VACIO. `redirect()` solo en `+*.server.ts`/`+page.ts` load/actions. Para nav client usar `goto()`.
+- [ ] **Todo `use:enhance` con callback custom llama `update()` o `applyAction()`** (sino se traga redirects/exito). Grep: por cada `grep -rln "use:enhance={(" src/routes`, abri el archivo y confirma que el callback async hace `await update()` o `applyAction(result)`. Si no, el registro/login "no hace nada" al exito.
 
 ## Si algo falla en Fase 6-7
 

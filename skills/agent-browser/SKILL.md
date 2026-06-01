@@ -111,29 +111,57 @@ CRITICO: el endpoint de seed DEBE hashear el password con el MISMO bcryptjs que 
 
 Si la app NO tiene DB/auth (landing, calculadora): salteá este paso y el login del paso 4.
 
-## 3. Abrir y verificar render real
+## 3. Abrir la RAIZ `/` primero y verificar que NO esta en blanco
+
+CRITICO: abri SIEMPRE la raiz `$PREVIEW` (sin `/login`), porque es la primera URL que toca el usuario. NUNCA saltes directo a `/login` — si lo haces, te perdes la pagina en blanco de la raiz (el bug nro 1). Razon comun de raiz en blanco: `redirect()` llamado en un `$effect`/cliente mata la hidratacion.
 
 ```bash
-agent-browser open "$PREVIEW"
+agent-browser open "$PREVIEW"          # la RAIZ, no /login
 agent-browser wait --load networkidle
 agent-browser snapshot --json          # accessibility tree con refs @e1, @e2...
 ```
 
-Mira el snapshot: ¿hay contenido real del sistema? Si esta vacio, o ves "Welcome to SvelteKit" / "Edit this file" / template default → **FAIL** (la pagina raiz no tiene contenido real). Si el screenshot sale sin estilos (HTML plano) → falta `import '../app.css'`.
+Mira el snapshot DESPUES de hidratar:
+- **Si el snapshot esta casi vacio** (1-2 nodos, sin form ni contenido) pese a que el HTML por curl tiene contenido → **PAGINA EN BLANCO por crash de hidratacion**. FAIL. Causa tipica: `redirect()` en cliente, o un error JS que mata el mount. Revisá `agent-browser errors --json` (paso 5) — ahi vas a ver la excepcion. curl NO atrapa esto (ve el HTML SSR), por eso el navegador es obligatorio.
+- Si ves "Welcome to SvelteKit" / template default → FAIL.
+- Si el screenshot sale sin estilos (HTML plano) → falta `import '../app.css'`.
 
-## 4. Login con las credenciales sembradas (si hay auth)
+## 4. Probar el flujo de REGISTRO (no solo login)
 
-Del snapshot saca los refs de los inputs (email, password) y el boton submit:
+El registro es la primera accion real de un usuario nuevo y el form mas frecuentemente roto (redirect tras submit que no se sigue por `use:enhance` sin `update()`). Registra un usuario NUEVO via la UI y verifica que **redirige y muestra exito**:
 
 ```bash
+agent-browser open "$PREVIEW/register"   # o segui el link "Registrate" desde la raiz
+agent-browser wait --load networkidle
+agent-browser snapshot --json
+# llena el form con un email random nuevo
+agent-browser fill @e<name>  "Smoke Test"
+agent-browser fill @e<email> "smoke+$(date +%s)@papolo.dev"
+agent-browser fill @e<pass>  "Test1234!"
+# si hay confirmar password, llenalo igual
+agent-browser click @e<submit>
+agent-browser wait --load networkidle
+agent-browser get url                    # DEBE ser /dashboard (o pagina logueada), NO seguir en /register
+agent-browser snapshot --json            # confirmar que entro
+```
+
+Si tras el submit la URL SIGUE en `/register` y no hay mensaje de exito ni de error → el `use:enhance` no esta llamando `update()`/`applyAction()` y se traga el redirect. **FAIL** — el usuario real veria "no pasa nada", reintentaria, y le diria "ya estas registrado". Reportalo y fixea (ver sveltekit-expert: enhance con `update()`).
+
+## 4b. Login con las credenciales sembradas
+
+Usa el usuario DEMO sembrado que TIENE datos (no un admin vacio), asi verificas que la data se ve. Del snapshot de `/login` saca los refs:
+
+```bash
+agent-browser open "$PREVIEW/login"
 agent-browser fill @e<email>  "test@papolo.dev"
 agent-browser fill @e<pass>   "Test1234!"
 agent-browser click @e<submit>
 agent-browser wait --load networkidle
-agent-browser snapshot --json          # confirmar que entro al dashboard
+agent-browser get url                    # DEBE haber cambiado a /dashboard
+agent-browser snapshot --json            # confirmar dashboard CON datos sembrados visibles
 ```
 
-Si despues del submit seguis en el login o ves "Credenciales invalidas" CON las creds correctas → casi siempre es **conexion a DB**, no el codigo de auth. Verificá `curl -sf $PREVIEW/api/health` (deberia mostrar el estado de la DB). NO te pongas a debuggear el form de login.
+Si despues del submit seguis en el login o ves "Credenciales invalidas" CON las creds correctas → casi siempre es **conexion a DB**, no el codigo de auth. Verificá `curl -sf $PREVIEW/api/health`. Si la URL no cambia pero tampoco hay error → es el mismo bug de `use:enhance` sin `update()`. NO debuggees el form a ciegas.
 
 ## 5. Chequear errores JS y consola
 
@@ -155,13 +183,14 @@ agent-browser close || true            # SIEMPRE cerrar — sino queda daemon hu
 
 | Señal | PASS si | FAIL si |
 |---|---|---|
-| snapshot inicial | nodos con texto real del dominio | vacio, o "Welcome to SvelteKit" / template default |
-| `errors` | array vacio | hay excepciones JS no capturadas |
-| login (si hay auth) | post-submit el snapshot muestra estado autenticado / dashboard | sigue en login o "Credenciales invalidas" con creds correctas |
+| raiz `/` hidratada | snapshot con form/contenido real tras networkidle | snapshot casi vacio = blank por crash de hidratacion (curl NO lo ve) |
+| `errors` (en CADA pagina) | array vacio | hay excepciones JS no capturadas |
+| registro | tras submit la URL cambia a /dashboard + entra | sigue en /register sin exito ni error = `enhance` sin `update()` |
+| login con demo user | post-submit URL = /dashboard, datos sembrados visibles | sigue en login, o dashboard vacio pese a seed |
 | datos del dominio | se ven los registros sembrados | listas vacias pese a estar sembrado |
 | screenshot | render visible y con estilos | en blanco / HTML sin CSS |
 
-PASS = TODAS las señales aplicables en verde. Recien ahi reporta el preview URL al usuario.
+PASS = TODAS las señales aplicables en verde. Verifica raiz + registro + login, no solo login. Recien ahi reporta el preview URL al usuario.
 
 ## En FAIL — NO reportes exito
 
