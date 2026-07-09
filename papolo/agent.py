@@ -15,9 +15,20 @@ from .prompts import REASONING_PROTOCOL
 
 
 MAX_PARALLEL_TOOL_CALLS = int(os.environ.get("PAPOLO_MAX_PARALLEL", "8"))
-PER_CALL_MAX_ITERS = int(os.environ.get("PAPOLO_PER_CALL_MAX_ITERS", "50"))
-# Checkpoint de reflexion anti-garrotera: a mitad del loop forzamos un paso atras
+# NO hay tope duro de tool calls por turno: una tarea legitima puede ser larguisima (un
+# build completo, una migracion grande, un refactor extenso) y cortarla a la mitad —
+# forzando un "resumi lo que tenes / ¿seguimos?" — es peor que dejarla correr hasta
+# terminar. El unico freno es cooperativo:
+#   - un checkpoint de reflexion PERIODICO que hace parar y razonar contra bucles ciegos,
+#   - el _loop_nudge, que marca reintentos identicos que ya fallaron,
+#   - PAPOLO_MAX_ITERS (default 0 = ilimitado): kill-switch opcional del operador.
+#
+# Reflexion anti-bucle: primer checkpoint segun scope (un build recien scaffoldea a
+# iter 20 — reflexionar ahi es prematuro), y despues se repite cada REFLEXION_EVERY para
+# que tambien atrape loops en tareas MUY largas. REFLEXION_AT_ITER=0 lo desactiva.
 REFLEXION_AT_ITER = int(os.environ.get("PAPOLO_REFLEXION_AT_ITER", "20"))
+FULL_SYSTEM_REFLEXION_AT_ITER = int(os.environ.get("PAPOLO_FULL_SYSTEM_REFLEXION_AT_ITER", "70"))
+REFLEXION_EVERY = int(os.environ.get("PAPOLO_REFLEXION_EVERY", "50"))
 
 
 def build_system_prompt(extra: str = "") -> str:
@@ -82,7 +93,14 @@ Regla de calidad (NO NEGOCIABLE):
 - "Status: running" en Coolify NO prueba que la app funciona — solo que el container arranco. Para apps con UI, "funciona" significa que el smoke test de `agent-browser` paso (render real + login + sin errores JS). NUNCA reportes exito de una app con UI sin haber corrido el smoke test, o sin dejar constancia explicita de por que no pudiste (ej. Chrome headless no instalado en el VPS).
 - **Eficiencia: hace las cosas bien la PRIMERA vez para no quemar deploys.** El primer build de cualquier app con DB ya debe incluir: `/api/health`, manejo de `PORT` (env), `/api/_seed`, conexion lazy con `MONGODB_DB_NAME`, y carga de datos via server `load` functions (NO `fetch` client-side, que rompe con cookies de sesion). Estos son requisitos del scaffold inicial, NO fixes reactivos post-deploy. Un deploy fallido por falta de health/PORT, o un dashboard que no carga datos por usar client-fetch, es un deploy desperdiciado que se evita generando bien de entrada. Meta: 3-4 deploys maximo, no 9.
 
-Iteraciones — tu tienes un limite de ~50 tool calls por respuesta. Si llegas a 50 sin haber respondido, el sistema te va a pedir que resumas urgentemente. No entres en loops de debug sin progreso visible. Si una tool devuelve error, maximo 2 reintentos — si sigue fallando, reportalo al usuario y pedi instrucciones en vez de seguir intentando solo.
+Regla de entrega — UN SOLO TURNO (NO NEGOCIABLE):
+- Cuando el usuario te encarga una app/sistema/clon, la construis ENTERA, funcional y deployada en el MISMO turno. El pedido ya es tu luz verde: NO necesitas pedir permiso para continuar tu propio trabajo.
+- PROHIBIDO entregar por partes ("Deploy 1 listo, Deploy 2 va a la mitad, ¿seguimos?"), frenar a mitad de camino, o preguntar "¿seguimos?" / "¿continuo?" / "¿lo dejo funcional en 20 min mas?". Eso es un trabajo a medias disfrazado de entrega. El clon de Discord que quedo sin mensajes en tiempo real porque paraste a preguntar es EXACTAMENTE lo que hay que no hacer.
+- Las fases del plan (del planner, de system-architecture, las "Fases" de las skills) son TU hoja de ruta INTERNA, no checkpoints para chequear con el usuario. Ejecutalas todas seguidas hasta que la app funcione end-to-end.
+- La UNICA razon valida para frenar y preguntar es una decision de producto/negocio que solo el usuario puede tomar y que cambia QUE construis (ej. "¿suscripcion o pago unico?", "¿que dominio uso?"). Falta de permiso para seguir NO es una de esas razones.
+- Cerras el turno recien cuando: la app esta deployada, el smoke test paso, y le pasas el URL. Ese es el unico "listo". Un resumen de "lo que falta" no es una entrega.
+
+Iteraciones — NO tenes un limite duro de tool calls por respuesta. Una tarea larga (un build completo, una migracion, un refactor extenso) puede necesitar muchisimas calls y esta perfecto: segui hasta terminarla en el turno, no la cortes a la mitad. Lo unico que tenes que cuidar es no meterte en bucles ciegos: si repetis algo que ya fallo, CAMBIA de estrategia; si una tool devuelve error, maximo 2 reintentos con el mismo approach — si sigue fallando, cambia de enfoque o reportalo al usuario y pedi instrucciones en vez de girar en falso. Cada tanto el sistema te va a inyectar un chequeo anti-bucle (parar y razonar si estas avanzando de verdad); no es un freno, es para que no gires sin progreso. Si ya terminaste, deja de hacer tool calls y responde.
 
 {REASONING_PROTOCOL}
 
@@ -215,6 +233,17 @@ class Agent:
     def send(self, user_message: str, on_event=None) -> str:
         self.messages.append({"role": "user", "content": user_message})
         self.pipeline.detect_project_type(user_message)
+
+        # Sin tope duro de iteraciones. Lo unico que depende del scope es CUANDO arranca
+        # la reflexion anti-bucle: mas tarde para un build (a iter 20 todavia scaffoldea)
+        # que para una tarea simple. detect_project_type ya corrio, self.pipeline.mode es
+        # confiable.
+        if self.pipeline.mode == PipelineTracker.MODE_FULL_SYSTEM:
+            reflexion_at = FULL_SYSTEM_REFLEXION_AT_ITER
+        else:
+            reflexion_at = REFLEXION_AT_ITER
+        next_reflexion = reflexion_at
+
         client = get_client()
         event_lock = threading.Lock()
 
@@ -228,8 +257,6 @@ class Agent:
                     pass
 
         iter_count = 0
-        forced_cap = False
-        reflexion_fired = False
         try:
           while True:
             # Cancelacion cooperativa: chequeamos al tope del loop, que es un punto
@@ -242,35 +269,27 @@ class Agent:
                 )
                 safe_event("final", {"content": cancelled})
                 return cancelled
+            # Kill-switch OPCIONAL del operador (PAPOLO_MAX_ITERS). Default 0 = ilimitado:
+            # sin esto, el turno corre hasta que el modelo deja de pedir tools o cancelan.
             if self.max_iters > 0 and iter_count >= self.max_iters:
                 break
-            if not forced_cap and iter_count >= PER_CALL_MAX_ITERS:
-                forced_cap = True
+            # Checkpoint de reflexion anti-bucle: PERIODICO, no es un limite. Hace parar y
+            # razonar si esta repitiendo algo que ya fallo. No corta el turno — solo inyecta
+            # un mensaje y sigue. Se repite cada REFLEXION_EVERY para atrapar loops tambien
+            # en tareas larguisimas.
+            if reflexion_at > 0 and iter_count >= next_reflexion:
+                next_reflexion = iter_count + REFLEXION_EVERY
                 self.messages.append({
                     "role": "user",
                     "content": (
-                        f"[Has usado {iter_count} iteraciones en esta respuesta. "
-                        f"Es hora de resumir y responder al usuario con lo que tienes. "
-                        f"No hagas mas tool calls. Responde en maximo 3 parrafos.]"
-                    ),
-                })
-                iter_count += 1
-                continue
-            # Checkpoint de reflexion anti-garrotera: a mitad del camino, parar y pensar
-            if (not reflexion_fired and 0 < REFLEXION_AT_ITER <= iter_count
-                    and iter_count < PER_CALL_MAX_ITERS):
-                reflexion_fired = True
-                self.messages.append({
-                    "role": "user",
-                    "content": (
-                        f"[REFLEXION OBLIGATORIA — llevas {iter_count} iteraciones sin cerrar. "
-                        f"PARA y razona en texto antes del proximo tool_call:\n"
+                        f"[CHEQUEO ANTI-BUCLE — llevas {iter_count} iteraciones. No es un "
+                        f"limite: podes seguir todo lo que la tarea necesite. Pero antes del "
+                        f"proximo tool_call, para y razona en texto:\n"
                         f"1. Que intente hasta ahora y que aprendi de cada intento.\n"
-                        f"2. Cual es mi HIPOTESIS actual de la causa raiz del problema (si estoy debuggeando).\n"
-                        f"3. Estoy repitiendo algo que ya fallo? Si si, CAMBIO de estrategia.\n"
-                        f"4. Cual es el proximo experimento minimo que me da informacion nueva.\n"
-                        f"Si ya resolvi la tarea, deja de hacer tool calls y responde al usuario. "
-                        f"No es un limite duro — es un alto para no entrar en loop ciego.]"
+                        f"2. Estoy AVANZANDO o repitiendo algo que ya fallo? Si repito, CAMBIO de estrategia.\n"
+                        f"3. Cual es mi hipotesis actual de la causa raiz (si estoy debuggeando).\n"
+                        f"4. Cual es el proximo paso minimo que me acerca a terminar.\n"
+                        f"Si ya resolvi la tarea, deja de hacer tool calls y responde al usuario.]"
                     ),
                 })
                 iter_count += 1
