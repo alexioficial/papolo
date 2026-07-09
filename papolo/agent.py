@@ -97,6 +97,10 @@ class Agent:
     messages: list = field(default_factory=list)
     workspace_dir: str | None = None
     conversation_uuid: str | None = None
+    # Flag de cancelacion cooperativa. send() la chequea entre rondas de tool calls
+    # y corta en un punto seguro (sin dejar tool_calls sin su tool_result). La setea
+    # otro thread (ej. el comando /papolo-stop del bot) via cancel().
+    _cancel: threading.Event = field(default_factory=threading.Event, init=False, repr=False, compare=False)
 
     def __post_init__(self):
         if self.workspace_dir:
@@ -115,6 +119,11 @@ class Agent:
 
         if not self.messages:
             self.messages.append({"role": "system", "content": sys_prompt})
+
+    def cancel(self) -> None:
+        """Pide cancelar el turno en curso. Cooperativo: send() corta en el proximo
+        checkpoint (entre rondas de tool calls), no mata tools ya en vuelo."""
+        self._cancel.set()
 
     def all_tools(self):
         return TOOL_SCHEMAS + [SKILL_TOOL_SCHEMA, SUBAGENT_TOOL_SCHEMA] + DEPLOY_TOOL_SCHEMAS
@@ -221,7 +230,18 @@ class Agent:
         iter_count = 0
         forced_cap = False
         reflexion_fired = False
-        while True:
+        try:
+          while True:
+            # Cancelacion cooperativa: chequeamos al tope del loop, que es un punto
+            # seguro — el estado termina en tool_results completos o en el user msg,
+            # nunca con tool_calls sin responder (eso romperia la proxima API call).
+            if self._cancel.is_set():
+                cancelled = (
+                    "[Cancelado por vos. Frené donde estaba — mandá una nueva "
+                    "instrucción cuando quieras.]"
+                )
+                safe_event("final", {"content": cancelled})
+                return cancelled
             if self.max_iters > 0 and iter_count >= self.max_iters:
                 break
             if not forced_cap and iter_count >= PER_CALL_MAX_ITERS:
@@ -312,6 +332,9 @@ class Agent:
                     "tool_call_id": call.id,
                     "content": result_str + nudge,
                 })
+        finally:
+            # Dejar la flag limpia para el proximo turno (agentes reusados en CLI).
+            self._cancel.clear()
 
         last_tools = []
         for m in reversed(self.messages):
