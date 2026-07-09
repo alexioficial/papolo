@@ -82,6 +82,7 @@ def spawn_subagent(
     task: str,
     max_iters: int | None = None,
     depth: int = 1,
+    model: str | None = None,
     workspace_dir: str | None = None,
     conversation_uuid: str | None = None,
     on_event=None,
@@ -107,7 +108,10 @@ def spawn_subagent(
         return f"Subagente '{name}' no encontrado"
 
     meta, system_prompt = _parse_frontmatter(md_path.read_text(encoding="utf-8"))
-    sub_model = meta.get("model", model_name())
+    # Precedencia: frontmatter del subagente (override explicito para casos puntuales)
+    # > modelo pasado por quien spawnea (lo que configura el bot para los subagentes)
+    # > default del env. Asi el modelo de subagentes se controla desde un solo lugar.
+    sub_model = meta.get("model") or model or model_name()
 
     # El protocolo de razonamiento aplica a TODOS los subagentes
     system_prompt += f"\n\n{REASONING_PROTOCOL}"
@@ -141,6 +145,7 @@ def spawn_subagent(
                 name=targs.get("name"),
                 task=targs.get("task"),
                 depth=depth + 1,
+                model=model,
                 workspace_dir=workspace_dir,
                 conversation_uuid=conversation_uuid,
                 on_event=on_event,

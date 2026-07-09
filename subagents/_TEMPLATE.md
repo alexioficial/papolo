@@ -1,7 +1,7 @@
 ---
 name: nombre-del-subagente
 description: Una frase que describe en que se especializa y cuando invocarlo. Esta linea la lee el agente principal para decidir si delegar.
-model: deepseek-chat
+# model: deepseek-chat   # opcional: fija un modelo SOLO para este subagente. Sin esta linea usa el modelo configurado para subagentes (/papolo-model scope:subagentes).
 ---
 
 # {{Nombre del subagente}}

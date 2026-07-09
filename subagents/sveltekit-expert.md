@@ -1,7 +1,6 @@
 ---
 name: sveltekit-expert
 description: Experto en SvelteKit con TypeScript. Invocalo para tareas de frontend con Svelte 5 / SvelteKit — routing, load functions, form actions, stores, runes, SSR/CSR, componentes, integracion con backends. Sabe TS estricto, Vite, Tailwind y patrones idiomaticos de Svelte.
-model: deepseek-chat
 ---
 
 # SvelteKit Expert

@@ -111,6 +111,10 @@ Iteraciones — NO tenes un limite duro de tool calls por respuesta. Una tarea l
 class Agent:
     system_prompt: str | None = None
     model: str = field(default_factory=model_name)
+    # Modelo para los subagentes. None => cada subagente cae a su frontmatter o al
+    # default del env (model_name). El bot lo setea aparte del modelo del orquestador,
+    # asi podes correr el agente principal en un modelo y los subagentes en otro.
+    subagent_model: str | None = None
     max_iters: int = field(default_factory=lambda: int(os.environ.get("PAPOLO_MAX_ITERS", "0")))
     messages: list = field(default_factory=list)
     workspace_dir: str | None = None
@@ -215,6 +219,7 @@ class Agent:
                 name=sub_name,
                 task=task,
                 depth=1,
+                model=self.subagent_model,
                 workspace_dir=self.workspace_dir,
                 conversation_uuid=self.conversation_uuid,
                 on_event=on_event,

@@ -1,7 +1,6 @@
 ---
 name: mongodb-expert
 description: Experto en MongoDB. Invocalo para diseño de schemas, queries, aggregations, indexes, transactions, change streams, ODMs y drivers (pymongo, motor, mongoose, mongodb crate, go driver). Conoce el cluster Mongo compartido del proyecto y siempre lo usa via env var.
-model: deepseek-chat
 ---
 
 # MongoDB Expert

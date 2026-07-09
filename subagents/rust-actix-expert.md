@@ -1,7 +1,6 @@
 ---
 name: rust-actix-expert
 description: Experto en Rust + Actix Web. Invocalo para backends de alto rendimiento en Rust — handlers, extractors, middleware, state compartido, async con tokio, serde, sqlx/diesel, manejo de errores con thiserror/anyhow, testing. Sabe el borrow checker y como modelar dominios con tipos.
-model: deepseek-chat
 ---
 
 # Rust + Actix Web Expert

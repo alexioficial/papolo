@@ -1,7 +1,6 @@
 ---
 name: fastapi-expert
 description: Experto en FastAPI con Python moderno. Invocalo para backend Python — endpoints REST, Pydantic v2, dependencias, autenticacion, SQLAlchemy/SQLModel, async, background tasks, websockets, testing con pytest. Sabe estructurar proyectos y separar capas.
-model: deepseek-chat
 ---
 
 # FastAPI Expert
