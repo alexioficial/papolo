@@ -195,15 +195,7 @@ class PipelineTracker:
                         "Pedi instrucciones explicitas."
                     )
 
-            # Gate: falta MONGODB_URI si hay DB
-            if "MONGODB_URI" not in str(args) and not self._mongodb_env_set():
-                return None  # warning suave, no bloquea
-
         return None
-
-    def _mongodb_env_set(self) -> bool:
-        """Checkea si coolify_set_mongodb_env fue llamado en este workspace."""
-        return "coolify_set_mongodb_env" in str(self.skills_loaded)
 
     # ── Tracking de resultados ─────────────────────────────────
 

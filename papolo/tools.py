@@ -148,6 +148,48 @@ def shell(command: str, cwd: str | None = None,
     return f"exit_code: {r.returncode}\n--- stdout ---\n{r.stdout}\n--- stderr ---\n{r.stderr}"
 
 
+def resolve_path_args(name: str, args: dict, workspace_dir: str | None) -> dict:
+    """Resuelve paths relativos contra el workspace y CONFINA los file tools ahi.
+
+    Sin esta guarda, read_file('/proc/1/environ') o read_file('/etc/passwd')
+    saltearian el allowlist de env del shell y filtrarian los secretos del bot
+    ante un prompt injection. Con workspace seteado (modo bot, multi-usuario),
+    read_file/write_file/list_dir NO pueden tocar nada fuera del workspace.
+
+    En modo CLI (workspace_dir=None, single-user local) no se aplica sandbox.
+
+    NOTA: `shell` sigue siendo una superficie de RCE completa (puede `cat`
+    cualquier archivo). Cerrarlo del todo requiere aislar la ejecucion en un
+    contenedor sin los secretos del bot en el mismo PID namespace.
+    """
+    if not workspace_dir:
+        return args
+    args = dict(args)
+    ws = Path(workspace_dir).resolve()
+    if name in ("read_file", "write_file", "list_dir"):
+        # read/write requieren path (el schema lo marca required); list_dir default '.'
+        if "path" not in args and name != "list_dir":
+            return args
+        raw = args.get("path", ".")
+        p = Path(raw)
+        if not p.is_absolute():
+            p = ws / p
+        p = p.resolve()
+        if p != ws and not p.is_relative_to(ws):
+            raise ValueError(
+                f"acceso denegado: '{raw}' queda fuera del workspace. "
+                f"read_file/write_file/list_dir solo operan dentro de {ws}."
+            )
+        args["path"] = str(p)
+    elif name == "shell":
+        cwd = args.get("cwd")
+        if not cwd:
+            args["cwd"] = str(ws)
+        elif not Path(cwd).is_absolute():
+            args["cwd"] = str(ws / cwd)
+    return args
+
+
 DISPATCH = {
     "read_file": read_file,
     "write_file": write_file,

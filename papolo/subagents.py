@@ -5,7 +5,7 @@ import os
 import yaml
 
 from .deepseek import get_client, model_name
-from .tools import TOOL_SCHEMAS, DISPATCH
+from .tools import TOOL_SCHEMAS, DISPATCH, resolve_path_args
 from .skills import SKILL_TOOL_SCHEMA, skill_tool_dispatch
 from .deploy import DEPLOY_TOOL_SCHEMAS, DEPLOY_DISPATCH
 from .prompts import REASONING_PROTOCOL
@@ -77,23 +77,6 @@ SUBAGENT_TOOL_SCHEMA = {
 }
 
 
-def _resolve_path_args(name: str, args: dict, workspace_dir: str | None) -> dict:
-    if not workspace_dir:
-        return args
-    args = dict(args)
-    if name in ("read_file", "write_file", "list_dir") and "path" in args:
-        p = Path(args["path"])
-        if not p.is_absolute():
-            args["path"] = str(Path(workspace_dir) / p)
-    elif name == "shell":
-        cwd = args.get("cwd")
-        if not cwd:
-            args["cwd"] = workspace_dir
-        elif not Path(cwd).is_absolute():
-            args["cwd"] = str(Path(workspace_dir) / cwd)
-    return args
-
-
 def spawn_subagent(
     name: str,
     task: str,
@@ -150,7 +133,7 @@ def spawn_subagent(
     ]
 
     def sub_dispatch(tname: str, targs: dict) -> str:
-        targs = _resolve_path_args(tname, targs, workspace_dir)
+        targs = resolve_path_args(tname, targs, workspace_dir)
         if tname == "load_skill":
             return skill_tool_dispatch(**targs)
         if tname == "spawn_subagent":

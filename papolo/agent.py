@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .deepseek import get_client, model_name
-from .tools import TOOL_SCHEMAS, DISPATCH
+from .tools import TOOL_SCHEMAS, DISPATCH, resolve_path_args
 from .skills import SKILL_TOOL_SCHEMA, skill_tool_dispatch, skills_index_for_prompt
 from .subagents import SUBAGENT_TOOL_SCHEMA, spawn_subagent, subagents_index_for_prompt
 from .deploy import DEPLOY_TOOL_SCHEMAS, DEPLOY_DISPATCH, deploy_index_for_prompt
@@ -87,23 +87,6 @@ Iteraciones — tu tienes un limite de ~50 tool calls por respuesta. Si llegas a
 {extra}""".strip()
 
 
-def _resolve_path_args(name: str, args: dict, workspace_dir: str | None) -> dict:
-    if not workspace_dir:
-        return args
-    args = dict(args)
-    if name in ("read_file", "write_file", "list_dir") and "path" in args:
-        p = Path(args["path"])
-        if not p.is_absolute():
-            args["path"] = str(Path(workspace_dir) / p)
-    elif name == "shell":
-        cwd = args.get("cwd")
-        if not cwd:
-            args["cwd"] = workspace_dir
-        elif not Path(cwd).is_absolute():
-            args["cwd"] = str(Path(workspace_dir) / cwd)
-    return args
-
-
 @dataclass
 class Agent:
     system_prompt: str | None = None
@@ -123,9 +106,9 @@ class Agent:
         if self.workspace_dir:
             sys_prompt += (
                 f"\n\nWorkspace: tu directorio de trabajo aislado es `{self.workspace_dir}` "
-                f"(ya tiene `git init` hecho). Todos los read_file/write_file/list_dir con paths "
-                f"relativos resuelven ahi. `shell` sin cwd corre ahi. Trabaja siempre dentro de este "
-                f"directorio salvo que necesites algo afuera explicitamente."
+                f"(ya tiene `git init` hecho). read_file/write_file/list_dir estan CONFINADOS a "
+                f"este directorio por seguridad (paths relativos resuelven ahi; los absolutos fuera "
+                f"del workspace se rechazan). `shell` sin cwd corre ahi. Trabaja siempre adentro."
             )
 
         if not self.messages:
@@ -169,7 +152,7 @@ class Agent:
         return ""
 
     def _dispatch(self, name: str, args: dict, on_event=None) -> str:
-        args = _resolve_path_args(name, args, self.workspace_dir)
+        args = resolve_path_args(name, args, self.workspace_dir)
 
         # Pipeline block check: build/deploy sin pasar quality check
         block = self.pipeline.should_block(name, args)
