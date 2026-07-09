@@ -3,9 +3,11 @@ Pipeline enforcement para Papolo.
 
 Tres mecanismos combinados para que Papolo NO pueda saltarse el pipeline:
 
-1. INYECCION (en _dispatch): cuando Papolo intenta spawnear un subagente
-   implementador sin las skills requeridas, se cargan automaticamente y se
-   devuelve su contenido AL subagente. Papolo las ve y las aplica.
+1. INYECCION (en _dispatch): al spawnear un subagente implementador, las skills
+   que su rol requiere (segun el modo) se cargan automaticamente y se inyectan en
+   EL SYSTEM PROMPT DEL SUBAGENTE — no en el del orquestador. Cada worker recibe su
+   propia copia (indispensable si se spawnean varios en paralelo) y el reasoner
+   principal queda liviano en vez de arrastrar el texto de las skills cada turno.
 
 2. BLOQUEO (en _dispatch): build/deploy commands se interceptan y bloquean
    si production-quality no ha pasado. El modelo recibe un mensaje de bloqueo.
@@ -16,6 +18,7 @@ Tres mecanismos combinados para que Papolo NO pueda saltarse el pipeline:
 
 import json
 import re
+import threading
 from typing import Optional
 
 
@@ -32,6 +35,12 @@ class PipelineTracker:
 
     def __init__(self, workspace_dir: Optional[str] = None):
         self.workspace_dir = workspace_dir
+        # Las tool calls de un mismo turno corren en paralelo (ThreadPoolExecutor en
+        # agent.py/subagents.py) y todas mutan/leen este tracker. Con la paralelizacion
+        # de implementadores eso es la norma, no la excepcion, asi que el estado
+        # compartido va protegido: sin el lock, un sorted(skills_loaded) mientras otro
+        # thread hace add() revienta con "Set changed size during iteration".
+        self._lock = threading.RLock()
         self.skills_loaded: set[str] = set()
         self.planner_output: Optional[str] = None
         self.production_quality_loaded: bool = False
@@ -143,45 +152,39 @@ class PipelineTracker:
 
     # ── Mecanismo 1: Inyeccion de skills en spawn_subagent ─────
 
-    def missing_skills_for_subagent(self, subagent_name: str) -> list[str]:
-        """Skills que deben cargarse ANTES de spawnear este subagente.
+    def skills_to_inject_for_subagent(self, subagent_name: str) -> list[str]:
+        """Skills que ESTE subagente necesita en su propio contexto, segun rol y modo.
 
-        Devuelve lista vacia si no faltan skills.
-        Segun el modo, requiere diferentes skills:
-        - FULL_SYSTEM: architecture + design + ux + ui-ux-pro-max + reachability-audit
-        - SIMPLE_TOOL: solo professional-ui-design
-        - CONVERSATION: ninguna
-        - Cualquier modo con hint de tiempo real: + realtime-architecture
+        A diferencia de `missing_skills_for_subagent`, NO se filtra por skills ya
+        cargadas: cada subagente arranca con contexto fresco (sobre todo los workers
+        paralelos), asi que necesita SU copia de las skills aunque otro subagente ya
+        las haya usado. Se inyectan en el system prompt del subagente — nunca en el del
+        orquestador — que es lo que mantiene liviano al reasoner: en vez de arrastrar
+        20-40k tokens de skills en cada turno del agente principal, el texto pesado vive
+        una sola vez en el contexto efimero de un subagente flash.
+
+        - FULL_SYSTEM: professional-ui-design + system-architecture + ux-methodology +
+          ui-ux-pro-max + reachability-audit.
+        - SIMPLE_TOOL: solo professional-ui-design.
+        - CONVERSATION / planner: ninguna.
+        - Cualquier modo con hint de tiempo real: + realtime-architecture.
         """
         if subagent_name in ("planner", ""):
             return []
         if self.mode == self.MODE_CONVERSATION:
             return []
 
-        missing = []
-        # Ambos modos (simple tool y full system) necesitan diseño profesional
-        if "professional-ui-design" not in self.skills_loaded:
-            missing.append("professional-ui-design")
-
-        # Solo full system necesita arquitectura, UX completo y auditoria de alcanzabilidad
+        skills = ["professional-ui-design"]
         if self.mode == self.MODE_FULL_SYSTEM:
-            if "system-architecture" not in self.skills_loaded:
-                missing.append("system-architecture")
-            if "ux-methodology" not in self.skills_loaded:
-                missing.append("ux-methodology")
-            if "ui-ux-pro-max" not in self.skills_loaded:
-                missing.append("ui-ux-pro-max")
-            # Toda app multi-pagina: garantizar que cada ruta/capacidad sea alcanzable
-            if "reachability-audit" not in self.skills_loaded:
-                missing.append("reachability-audit")
-
-        # Dominio de tiempo real (chat, notificaciones, presencia, feed live): el
-        # transporte correcto es SSE/WebSocket, NUNCA polling. Aplica a simple_tool
-        # y full_system por igual.
-        if self.realtime_hint and "realtime-architecture" not in self.skills_loaded:
-            missing.append("realtime-architecture")
-
-        return missing
+            skills += [
+                "system-architecture",
+                "ux-methodology",
+                "ui-ux-pro-max",
+                "reachability-audit",
+            ]
+        if self.realtime_hint:
+            skills.append("realtime-architecture")
+        return skills
 
     def enrich_task(self, task: str) -> str:
         """Attacha planner output al task si existe y no esta ya attachado."""
@@ -254,52 +257,55 @@ class PipelineTracker:
     # ── Tracking de resultados ─────────────────────────────────
 
     def record_result(self, name: str, args_raw: str, result: str):
-        """Registra el resultado de una tool call para actualizar el estado."""
+        """Registra el resultado de una tool call para actualizar el estado.
+
+        Corre bajo lock: lo llaman en paralelo los workers de un mismo turno."""
         args = json.loads(args_raw or "{}")
 
-        if name == "load_skill":
-            skill = args.get("name", "")
-            self.skills_loaded.add(skill)
-            if skill == "production-quality":
-                self.production_quality_loaded = True
-            # Cargar debugging-systematic resetea unhealthy flag
-            if skill == "debugging-systematic" and self.last_deploy_unhealthy:
-                self.last_deploy_unhealthy = False
+        with self._lock:
+            if name == "load_skill":
+                skill = args.get("name", "")
+                self.skills_loaded.add(skill)
+                if skill == "production-quality":
+                    self.production_quality_loaded = True
+                # Cargar debugging-systematic resetea unhealthy flag
+                if skill == "debugging-systematic" and self.last_deploy_unhealthy:
+                    self.last_deploy_unhealthy = False
 
-        elif name == "spawn_subagent":
-            if args.get("name") == "planner":
-                self.planner_output = result
+            elif name == "spawn_subagent":
+                if args.get("name") == "planner":
+                    self.planner_output = result
 
-        elif name == "coolify_deploy":
-            app_uuid = args.get("app_uuid", "unknown")
-            self.deploy_attempts[app_uuid] = self.deploy_attempts.get(app_uuid, 0) + 1
-            # Cada deploy reabre la obligacion de smoke-testear
-            self.deploy_happened = True
-            self.browser_tested = False
-            self.browser_nudge_fired = False
-            # Si el resultado menciona unhealthy, marcarlo
-            if "unhealthy" in result.lower() or "failed" in result.lower():
-                self.last_deploy_unhealthy = True
-                self.unhealthy_app_uuid = app_uuid
-                self.deploy_consecutive_failures += 1
+            elif name == "coolify_deploy":
+                app_uuid = args.get("app_uuid", "unknown")
+                self.deploy_attempts[app_uuid] = self.deploy_attempts.get(app_uuid, 0) + 1
+                # Cada deploy reabre la obligacion de smoke-testear
+                self.deploy_happened = True
+                self.browser_tested = False
+                self.browser_nudge_fired = False
+                # Si el resultado menciona unhealthy, marcarlo
+                if "unhealthy" in result.lower() or "failed" in result.lower():
+                    self.last_deploy_unhealthy = True
+                    self.unhealthy_app_uuid = app_uuid
+                    self.deploy_consecutive_failures += 1
 
-        elif name == "shell":
-            # Detectar si corrio el smoke test de navegador
-            if "agent-browser" in args.get("command", ""):
-                self.browser_tested = True
+            elif name == "shell":
+                # Detectar si corrio el smoke test de navegador
+                if "agent-browser" in args.get("command", ""):
+                    self.browser_tested = True
 
-        elif name == "coolify_status":
-            if "unhealthy" in result.lower() or "exited" in result.lower():
-                self.last_deploy_unhealthy = True
-            elif "running" in result.lower() and "healthy" in result.lower():
-                self.last_deploy_unhealthy = False
-                self.unhealthy_app_uuid = None
-                self.deploy_consecutive_failures = 0
+            elif name == "coolify_status":
+                if "unhealthy" in result.lower() or "exited" in result.lower():
+                    self.last_deploy_unhealthy = True
+                elif "running" in result.lower() and "healthy" in result.lower():
+                    self.last_deploy_unhealthy = False
+                    self.unhealthy_app_uuid = None
+                    self.deploy_consecutive_failures = 0
 
-        # Detectar si production-quality paso
-        if self.production_quality_loaded and not self.production_check_passed:
-            if "APTO PARA DEPLOY" in result or ("[PASS]" in result and "[FAIL]" not in result):
-                self.production_check_passed = True
+            # Detectar si production-quality paso
+            if self.production_quality_loaded and not self.production_check_passed:
+                if "APTO PARA DEPLOY" in result or ("[PASS]" in result and "[FAIL]" not in result):
+                    self.production_check_passed = True
 
     def should_nudge_browser_test(self) -> bool:
         """True si hay que recordarle al modelo que corra el smoke test de navegador
@@ -319,8 +325,10 @@ class PipelineTracker:
             parts.append("- production-quality check: PASSED")
         else:
             parts.append("- production-quality check: NOT PASSED")
-        if self.skills_loaded:
-            parts.append(f"- Skills cargadas: {', '.join(sorted(self.skills_loaded))}")
+        with self._lock:
+            loaded_snapshot = sorted(self.skills_loaded)
+        if loaded_snapshot:
+            parts.append(f"- Skills cargadas: {', '.join(loaded_snapshot)}")
         if self.last_deploy_unhealthy:
             parts.append("- ULTIMO DEPLOY: FALLIDO (unhealthy) - diagnosticar antes de reintentar")
         if self.deploy_happened and not self.browser_tested:

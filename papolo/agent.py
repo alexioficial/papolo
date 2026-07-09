@@ -11,7 +11,7 @@ from .skills import SKILL_TOOL_SCHEMA, skill_tool_dispatch, skills_index_for_pro
 from .subagents import SUBAGENT_TOOL_SCHEMA, spawn_subagent, subagents_index_for_prompt
 from .deploy import DEPLOY_TOOL_SCHEMAS, DEPLOY_DISPATCH, deploy_index_for_prompt
 from .pipeline import PipelineTracker
-from .prompts import REASONING_PROTOCOL
+from .prompts import REASONING_PROTOCOL, PARALLEL_BUILD_PROTOCOL
 
 
 MAX_PARALLEL_TOOL_CALLS = int(os.environ.get("PAPOLO_MAX_PARALLEL", "8"))
@@ -92,6 +92,8 @@ Regla de calidad (NO NEGOCIABLE):
 - Cada ruta raiz (`/`) debe tener contenido real del sistema. No existe el concepto de "pagina de bienvenida" en sistemas de produccion.
 - "Status: running" en Coolify NO prueba que la app funciona — solo que el container arranco. Para apps con UI, "funciona" significa que el smoke test de `agent-browser` paso (render real + login + sin errores JS). NUNCA reportes exito de una app con UI sin haber corrido el smoke test, o sin dejar constancia explicita de por que no pudiste (ej. Chrome headless no instalado en el VPS).
 - **Eficiencia: hace las cosas bien la PRIMERA vez para no quemar deploys.** El primer build de cualquier app con DB ya debe incluir: `/api/health`, manejo de `PORT` (env), `/api/_seed`, conexion lazy con `MONGODB_DB_NAME`, y carga de datos via server `load` functions (NO `fetch` client-side, que rompe con cookies de sesion). Estos son requisitos del scaffold inicial, NO fixes reactivos post-deploy. Un deploy fallido por falta de health/PORT, o un dashboard que no carga datos por usar client-fetch, es un deploy desperdiciado que se evita generando bien de entrada. Meta: 3-4 deploys maximo, no 9.
+
+{PARALLEL_BUILD_PROTOCOL}
 
 Regla de entrega — UN SOLO TURNO (NO NEGOCIABLE):
 - Cuando el usuario te encarga una app/sistema/clon, la construis ENTERA, funcional y deployada en el MISMO turno. El pedido ya es tu luz verde: NO necesitas pedir permiso para continuar tu propio trabajo.
@@ -198,24 +200,26 @@ class Agent:
             sub_name = args.get("name", "")
             task = args.get("task", "")
 
-            # Pipeline: inyeccion de skills faltantes
-            missing = self.pipeline.missing_skills_for_subagent(sub_name)
-            if missing:
-                results = []
-                for s in missing:
-                    content = skill_tool_dispatch(name=s)
-                    self.pipeline.record_result(
-                        "load_skill", json.dumps({"name": s}), content
-                    )
-                    results.append(
-                        f"[PIPELINE] Skill '{s}' cargada:\n\n{content}"
-                    )
-                return "\n\n---\n\n".join(results)
+            # Pipeline: cargar las skills que ESTE subagente necesita y pasarlas a SU
+            # contexto (no al del orquestador). Antes esto rebotaba: se devolvia el texto
+            # completo de las skills al orquestador y este tenia que re-spawnear. Eso
+            # tenia dos costos: (1) doble round-trip por cada subagente, y (2) el reasoner
+            # arrastraba 20-40k tokens de skills en el historial y los re-mandaba en CADA
+            # turno del build. Peor: si el orquestador spawneaba varios implementadores en
+            # paralelo, TODOS rebotaban con el dump de skills y NINGUNO implementaba,
+            # rompiendo la paralelizacion. Ahora las skills van al system prompt del
+            # subagente (flash, contexto efimero) y el orquestador solo ve el output final.
+            to_inject = self.pipeline.skills_to_inject_for_subagent(sub_name)
+            injected_skills = []
+            for s in to_inject:
+                content = skill_tool_dispatch(name=s)
+                self.pipeline.record_result("load_skill", json.dumps({"name": s}), content)
+                injected_skills.append((s, content))
 
             # Pipeline: enriquecer task con plan del arquitecto
             task = self.pipeline.enrich_task(task)
 
-            return spawn_subagent(
+            out = spawn_subagent(
                 name=sub_name,
                 task=task,
                 depth=1,
@@ -224,7 +228,14 @@ class Agent:
                 conversation_uuid=self.conversation_uuid,
                 on_event=on_event,
                 pipeline_state=self.pipeline.summary_for_subagent(),
+                injected_skills=injected_skills,
             )
+            if injected_skills:
+                names = ", ".join(s for s, _ in injected_skills)
+                # Linea corta para que el orquestador sepa que se aplico (coherencia y
+                # enforcement) sin arrastrar el texto pesado de las skills.
+                out = f"[pipeline] skills aplicadas por el subagente {sub_name}: {names}\n\n{out}"
+            return out
         if name in DEPLOY_DISPATCH:
             return DEPLOY_DISPATCH[name](
                 workspace_dir=self.workspace_dir,

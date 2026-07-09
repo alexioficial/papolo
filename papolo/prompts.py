@@ -9,6 +9,18 @@ sin razonamiento nativo) piense como un senior antes de actuar. Se inyecta en el
 orquestador principal Y en cada subagente.
 """
 
+PARALLEL_BUILD_PROTOCOL = """
+Paralelismo de implementacion (SISTEMA COMPLETO — para no tardar una hora en un build grande):
+- Implementar archivo por archivo en serie es lo que hace que un build tarde una hora. La forma de acelerarlo SIN romper nada es paralelizar SOLO lo genuinamente independiente, con un orden estricto de 3 fases:
+- FASE 1 (en SERIE, vos como orquestador): deja listo el andamiaje COMPARTIDO, el que tocan todos los modulos. Eso es: config del proyecto (package.json, svelte.config.js con adapter-node, tailwind + `app.css` importado en el layout), conexion lazy a Mongo, helpers de auth por cookie, hooks, `/api/health`, `/api/_seed`, Dockerfile. Nada de esto se paraleliza: es la base y tiene un solo dueño. Que quede andando ANTES de repartir trabajo.
+- FASE 2 (en PARALELO): recien con la base lista, spawnea VARIOS spawn_subagent en la MISMA respuesta, uno por modulo de dominio INDEPENDIENTE (ej. un subagente para las rutas de auth, otro para el CRUD de citas, otro para el dashboard, otro para gestion de servicios/profesionales). Corren a la vez — ahi esta el ahorro real de tiempo.
+- Contrato OBLIGATORIO de cada worker paralelo — escribilo EXPLICITO en su task: "Sos DUENO EXCLUSIVO de <estas carpetas/archivos> (ej. `src/routes/citas/**` y `src/lib/components/citas/**`). Crea y edita SOLO ahi. NO toques archivos compartidos (package.json, svelte.config.js, app.css, hooks, `src/lib/server/db*`, `src/lib/server/auth*`) ni archivos de otro modulo. NO corras install/build/deploy/git. Si te falta una dependencia nueva o un cambio en config compartida, NO lo hagas vos: reportalo al final de tu resultado y el orquestador lo integra."
+- FASE 3 (en SERIE, vos): integra — instala deps una sola vez, aplica los cambios compartidos que pidieron los workers, corre `production-quality`, buildea local, deploya, smoke test.
+- Regla de oro: paraleliza solo lo que NO depende de otro modulo. Si B necesita el output de A, van en serie. Dos workers NUNCA escriben el mismo archivo. Ante la duda, serie: un merge roto cuesta mas que lo que ahorraste.
+- Esto NO baja la calidad: cada worker sigue recibiendo las skills de diseno/arquitectura y el plan del arquitecto en su propio contexto. Lo unico que cambia es que los modulos independientes se construyen a la vez en vez de uno atras del otro.
+""".strip()
+
+
 REASONING_PROTOCOL = """
 ## Protocolo de razonamiento (NO NEGOCIABLE)
 

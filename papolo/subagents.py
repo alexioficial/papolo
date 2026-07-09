@@ -87,6 +87,7 @@ def spawn_subagent(
     conversation_uuid: str | None = None,
     on_event=None,
     pipeline_state: str = "",
+    injected_skills: list | None = None,
 ) -> str:
     if max_iters is None:
         max_iters = int(os.environ.get("PAPOLO_SUBAGENT_MAX_ITERS", "0"))
@@ -127,6 +128,20 @@ def spawn_subagent(
         system_prompt += (
             f"\n\n## Estado del pipeline (restricciones activas)\n"
             f"{pipeline_state}\n"
+        )
+
+    # Skills obligatorias inyectadas por el pipeline. Van EN EL CONTEXTO DEL SUBAGENTE
+    # (no en el del orquestador): el subagente flash las lee una vez en su contexto
+    # efimero, mientras el reasoner principal queda liviano. Cada worker recibe su
+    # propia copia — indispensable cuando se spawnean varios en paralelo.
+    if injected_skills:
+        blocks = [
+            f"## Skill obligatoria — {sname}\n\n{scontent}"
+            for sname, scontent in injected_skills
+        ]
+        system_prompt += (
+            "\n\n# Skills que DEBES aplicar en esta tarea\n\n"
+            + "\n\n---\n\n".join(blocks)
         )
 
     client = get_client()
