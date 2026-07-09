@@ -37,6 +37,9 @@ class PipelineTracker:
         self.production_quality_loaded: bool = False
         self.production_check_passed: bool = False
         self.mode: str = self.MODE_CONVERSATION
+        # True si el pedido huele a tiempo real (chat, notificaciones, presencia,
+        # feed live, colaboracion, multiplayer). Fuerza la skill realtime-architecture.
+        self.realtime_hint: bool = False
 
         # Deploy failure tracking
         self.deploy_attempts: dict[str, int] = {}
@@ -68,6 +71,18 @@ class PipelineTracker:
             "plataforma de", "sistema completo", "api con", "backend con",
             "dashboard con", "panel de administracion",
         ]
+        # Nombres de apps multi-usuario: aunque no digan "auth", necesitan identidad +
+        # DB + roles. Un chat/red social/foro/clon sin auth ni persistencia esta mal
+        # construido. Pero SOLO cuentan como sistema si hay verbo de construccion y no
+        # es una pregunta — "que es un chat" o "que opinas de discord" NO son builds.
+        multiuser_kw = [
+            "chat", "mensajeria", "mensajería", "red social", "foro",
+            "clon de", "multijugador", "multiplayer", "colaborativ", "discord",
+        ]
+        build_verbs = [
+            "construye", "construi", "crea", "cre", "haz", "hace", "arma", "armá",
+            "build", "programa", "desarrolla", "implementa", "hacer",
+        ]
         # Palabras que indican herramienta simple
         simple_tool_kw = [
             "landing page", "pagina de aterrizaje", "calculadora",
@@ -83,7 +98,16 @@ class PipelineTracker:
             "que significa", "dime sobre",
         ]
 
+        is_question = any(kw in msg for kw in conversation_kw)
+
         if any(kw in msg for kw in full_system_kw):
+            self.mode = self.MODE_FULL_SYSTEM
+        elif (
+            any(kw in msg for kw in multiuser_kw)
+            and any(v in msg for v in build_verbs)
+            and not is_question
+        ):
+            # "hazme un clon de discord", "crea un chat" → sistema multi-usuario
             self.mode = self.MODE_FULL_SYSTEM
         elif any(kw in msg for kw in simple_tool_kw):
             self.mode = self.MODE_SIMPLE_TOOL
@@ -97,6 +121,26 @@ class PipelineTracker:
             else:
                 self.mode = self.MODE_CONVERSATION
 
+        self.realtime_hint = self._detect_realtime(msg)
+
+    def _detect_realtime(self, msg: str) -> bool:
+        """True si el pedido implica datos push (cambios de otros usuarios en vivo).
+
+        Estos dominios necesitan SSE/WebSocket, no polling. El clasico error de
+        Papolo fue resolver un chat con setInterval/fetch.
+        """
+        realtime_kw = [
+            "tiempo real", "real-time", "realtime", "en vivo", "live",
+            "chat", "mensajeria", "mensajería", "mensajes", "messaging",
+            "notificacion", "notificación", "notificaciones",
+            "presencia", "en linea", "en línea", "online",
+            "escribiendo", "typing", "websocket", "socket", "sse",
+            "colaborativ", "colabora", "multiplayer", "multijugador",
+            "feed en vivo", "streaming", "subasta", "puja", "bidding",
+            "discord", "slack", "whatsapp", "telegram", "messenger",
+        ]
+        return any(kw in msg for kw in realtime_kw)
+
     # ── Mecanismo 1: Inyeccion de skills en spawn_subagent ─────
 
     def missing_skills_for_subagent(self, subagent_name: str) -> list[str]:
@@ -104,9 +148,10 @@ class PipelineTracker:
 
         Devuelve lista vacia si no faltan skills.
         Segun el modo, requiere diferentes skills:
-        - FULL_SYSTEM: architecture + design + ux + ui-ux-pro-max
+        - FULL_SYSTEM: architecture + design + ux + ui-ux-pro-max + reachability-audit
         - SIMPLE_TOOL: solo professional-ui-design
         - CONVERSATION: ninguna
+        - Cualquier modo con hint de tiempo real: + realtime-architecture
         """
         if subagent_name in ("planner", ""):
             return []
@@ -118,7 +163,7 @@ class PipelineTracker:
         if "professional-ui-design" not in self.skills_loaded:
             missing.append("professional-ui-design")
 
-        # Solo full system necesita arquitectura y UX completo
+        # Solo full system necesita arquitectura, UX completo y auditoria de alcanzabilidad
         if self.mode == self.MODE_FULL_SYSTEM:
             if "system-architecture" not in self.skills_loaded:
                 missing.append("system-architecture")
@@ -126,6 +171,15 @@ class PipelineTracker:
                 missing.append("ux-methodology")
             if "ui-ux-pro-max" not in self.skills_loaded:
                 missing.append("ui-ux-pro-max")
+            # Toda app multi-pagina: garantizar que cada ruta/capacidad sea alcanzable
+            if "reachability-audit" not in self.skills_loaded:
+                missing.append("reachability-audit")
+
+        # Dominio de tiempo real (chat, notificaciones, presencia, feed live): el
+        # transporte correcto es SSE/WebSocket, NUNCA polling. Aplica a simple_tool
+        # y full_system por igual.
+        if self.realtime_hint and "realtime-architecture" not in self.skills_loaded:
+            missing.append("realtime-architecture")
 
         return missing
 

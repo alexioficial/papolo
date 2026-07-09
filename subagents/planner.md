@@ -32,6 +32,8 @@ Cuando el usuario pide construir algo, **siempre** evalua y planifica explicitam
 6. **Paginacion / busqueda / filtros** — cualquier listado de > ~50 entradas necesita paginacion y search basico. Siempre planificalo.
 7. **Auditoria minima** — `created_at`, `updated_at`, idealmente `created_by`. Para acciones criticas (venta, cancelacion, cambio de rol) un log de eventos.
 8. **Seeds / datos de prueba** — un script para sembrar el primer admin + 2-3 records de cada entidad principal, sino la app vacia parece rota.
+9. **Modelo de interaccion (tiempo real vs CRUD)** — pregunta explicito: ¿un usuario necesita ver cambios de OTROS usuarios sin recargar? Chat, mensajeria, notificaciones, presencia (quien esta en linea), "escribiendo...", feeds en vivo, dashboards live, colaboracion, multiplayer, subastas → **tiempo real (SSE o WebSocket), NUNCA setInterval/fetch en loop**. Si los datos solo cambian por accion del propio usuario → CRUD normal. Si es tiempo real, marcalo y delega a la skill `realtime-architecture`. Este es un error historico de Papolo: resolver un chat con polling.
+10. **Alcanzabilidad (toda capacidad tiene entrada visible)** — cada ruta y cada capacidad del backend debe tener un punto de entrada VISIBLE en la UI. Regla: toda URL es alcanzable de alguna forma salvo que sea privada o limitada por permisos. Verifica los 4 dead-ends clasicos: (a) `/` no autenticado en blanco — debe ser landing con CTA login/registro o redirect a login; (b) login inaccesible — boton visible en todas las publicas; (c) accion bloqueada por auth que tira error sin ofrecer camino al login — usa `redirect(303, '/login?redirect=...')`; (d) recurso compartible (invite/server/room) sin boton de copiar link/ID. Delega el detalle a la skill `reachability-audit`.
 
 Si dudas si una de estas aplica, **inclui la propuesta y marca `(opcional, propongo agregar)`** en lugar de saltearlo silenciosamente. Mejor proponer de mas que dejar al main agent a improvisar.
 
@@ -80,6 +82,8 @@ Si dudas si una de estas aplica, **inclui la propuesta y marca `(opcional, propo
 - Paginacion/busqueda: {donde}
 - Auditoria: {minimo}
 - Seed data: {que sembrar}
+- Modelo de interaccion: {tiempo real (SSE/WS) | CRUD} — {que datos son push y por que, o "ninguno"}
+- Alcanzabilidad: {como se alcanza login/registro; recursos compartibles y su boton copiar-link; dead-ends a evitar}
 
 ## Stack y arquitectura
 - Frontend: {framework + adapter}

@@ -101,6 +101,16 @@ Para cada decision no obvia:
 - Validacion server-side (nunca confiar en client-side sola)
 - Cache busting en Dockerfile para evitar stale content
 
+#### 9. Comunicacion y Tiempo Real
+Decidi explicito el **modelo de interaccion** del sistema, no lo asumas CRUD por default:
+- ¿Un usuario tiene que ver cambios de OTROS usuarios sin recargar? (chat, notificaciones, presencia, feeds en vivo, dashboards live, colaboracion, multiplayer, subastas) → es **tiempo real**: usa **SSE** (server→cliente, nativo en SvelteKit) o **WebSocket** (bidireccional, requiere custom node server). **NUNCA** `setInterval`/`fetch` en loop.
+- ¿Los datos solo cambian por accion del propio usuario? → CRUD normal, re-lectura por `load`.
+- Si hay tiempo real, documenta: transporte (SSE/WS), como se hace el fan-out (bus en proceso para 1 container; Mongo change streams / Redis si escalas), y la carga inicial por server `load`.
+- Detalle completo en la skill `realtime-architecture` — cargala si el dominio es real-time.
+
+#### 10. Alcanzabilidad de Rutas
+Toda ruta/capacidad debe tener un **punto de entrada visible** en la UI (salvo privadas o limitadas por permisos). Arma un mapa: por cada ruta, quien la alcanza y desde que control visible. Reglas duras: `/` no autenticado nunca en blanco (landing con CTA login/registro o redirect a login); login accesible en <=1 click; guards con `redirect(303,'/login?redirect=...')` no 401 pelado; recursos compartibles (invites, servers, rooms) con boton copiar-link/ID. Detalle en la skill `reachability-audit`.
+
 ### Fase 2: Features Implicitas (Checklist Obligatorio)
 
 NO asumas que el usuario las pidio. Evaluar cada una y documentar en ARCH.md:
@@ -115,6 +125,8 @@ NO asumas que el usuario las pidio. Evaluar cada una y documentar en ARCH.md:
 - [ ] **Auditoria**: created_at, updated_at, created_by en cada entidad.
 - [ ] **Seed data**: script que crea admin inicial + 2-3 records de prueba.
 - [ ] **Edge cases del dominio**: producto sin stock, usuario sin email, duplicados, cancelaciones.
+- [ ] **Modelo de interaccion**: ¿tiempo real (chat/notificaciones/presencia/feed live)? → SSE/WebSocket, NUNCA polling. ¿CRUD? → re-lectura por load.
+- [ ] **Alcanzabilidad**: toda ruta/capacidad con entrada visible; `/` no-auth no en blanco; login en <=1 click; guards con redirect a login; recursos compartibles con boton copiar-link/ID.
 
 ### Fase 3: Plan de Implementacion (pasos concretos)
 
