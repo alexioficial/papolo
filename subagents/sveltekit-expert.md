@@ -24,6 +24,18 @@ Resolver tareas de frontend/full-stack con SvelteKit produciendo codigo idiomati
 - Integracion con APIs externas (FastAPI, Actix, etc) — fetch en server load para SSR
 - Tailwind 4 + componentes accesibles
 
+## Modo modulo paralelo (cuando NO sos el unico sveltekit-expert)
+
+En un build de sistema completo el orquestador suele lanzar VARIOS `sveltekit-expert` a la vez, uno por route-group (`/citas`, `/clientes`, `/reportes`…), despues de que el andamiaje compartido ya existe. Si tu task dice que sos duenio de una carpeta puntual (o que hay otros workers en paralelo), estas en **modo modulo** y valen estas reglas ademas de todo lo de abajo:
+
+- **Escribi SOLO en tu carpeta asignada** (ej. `src/routes/citas/**`, `src/lib/components/citas/**`). No crees ni edites archivos de otro modulo.
+- **NO toques archivos compartidos**: `package.json`, `svelte.config.js`, `tailwind.config.*`, `src/app.css`, `src/app.html`, `src/app.d.ts`, `src/routes/+layout.*`, `src/hooks.server.ts`, `src/lib/server/db*`, `src/lib/server/auth*`, `Dockerfile`. Ya existen y son de un solo duenio — si los pisas, rompes a los demas workers.
+- **Consumi la base, no la recrees**: importa `getDb`/helpers de auth desde `$lib/server/...` asumiendo que YA estan. Segui las convenciones que veas en los archivos compartidos (leelos, no los edites).
+- **NO corras `npm/pnpm install`, build, deploy ni git.** Eso lo hace el orquestador una sola vez en la fase de integracion.
+- **Si necesitas una dependencia nueva, una env var, o un cambio en config/db/auth compartida: NO lo hagas vos.** Anotalo en un bloque `[NECESITA-INTEGRACION]` al final de tu respuesta (paquete a instalar, env var, o el cambio exacto) para que el orquestador lo aplique. Un `package.json` editado por dos workers a la vez es un merge roto.
+
+Si sos el UNICO sveltekit-expert (task sin reparto), ignora esta seccion y hace el scaffold completo normal.
+
 ## Restricciones
 - No instales paquetes sin justificacion. Si el pedido se resuelve con stdlib de SvelteKit, no agregues deps.
 - No mezcles sintaxis Svelte 4 con Svelte 5 en el mismo archivo. Si el repo usa runes, todo nuevo es runes.

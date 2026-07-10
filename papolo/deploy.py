@@ -20,6 +20,11 @@ try:
 except ImportError:
     requests = None
 
+try:
+    import pymongo
+except ImportError:
+    pymongo = None
+
 
 def _env(k: str) -> str | None:
     return os.environ.get(k)
@@ -402,6 +407,205 @@ def coolify_destroy_app(*, workspace_dir, conversation_uuid,
         "coolify_app_uuid": app_uuid,
     })
     return f"OK app destruida: {app_uuid}"
+
+
+# --- Purga administrativa (limpieza total de lo que creo Papolo) ---
+#
+# NO son tools del modelo (no se registran en DEPLOY_TOOL_SCHEMAS/DISPATCH). Las llama
+# el bot directo desde un slash command de admin. Borran EXCLUSIVAMENTE recursos con la
+# huella de Papolo:
+#   - GitHub: repos `papolo-<8hex>-<name>` (prefijo que fuerza github_create_repo).
+#   - Coolify: apps cuyo fqdn cuelga de PAPOLO_PREVIEW_DOMAIN (dominio propio de Papolo).
+#   - Mongo: databases `papolo_*` (cada app usa su DB aislada `papolo_<short>`).
+# Los secretos (PAT, token Coolify, URI Mongo) se leen del env del proceso, nunca se pasan.
+
+_PAPOLO_REPO_RE = re.compile(r"^papolo-([0-9a-f]{8}|anon)-")
+
+
+def _is_papolo_repo(name: str) -> bool:
+    return bool(_PAPOLO_REPO_RE.match(name or ""))
+
+
+def _is_papolo_db(name: str) -> bool:
+    return (name or "").startswith("papolo_")
+
+
+def _github_list_papolo_repos() -> tuple[list[str], str | None]:
+    if not GITHUB_ENABLED:
+        return [], None
+    names: list[str] = []
+    page = 1
+    while page <= 20:  # tope defensivo: 20*100 = 2000 repos
+        r = requests.get(
+            "https://api.github.com/user/repos",
+            params={"per_page": 100, "page": page, "affiliation": "owner"},
+            headers=_gh_headers(), timeout=20,
+        )
+        if r.status_code >= 300:
+            return names, f"ERROR github list ({r.status_code}): {r.text[:200]}"
+        batch = r.json()
+        if not batch:
+            break
+        for repo in batch:
+            nm = repo.get("name", "")
+            if _is_papolo_repo(nm):
+                names.append(nm)
+        if len(batch) < 100:
+            break
+        page += 1
+    return names, None
+
+
+def _github_delete_repo_admin(name: str) -> tuple[bool, str]:
+    if not _is_papolo_repo(name):
+        return False, f"rechazado (no tiene huella de Papolo): {name}"
+    user = _env("PAPOLO_GITHUB_USER")
+    r = requests.delete(
+        f"https://api.github.com/repos/{user}/{name}",
+        headers=_gh_headers(), timeout=20,
+    )
+    if r.status_code == 204:
+        return True, f"borrado {name}"
+    if r.status_code == 404:
+        return True, f"ya no existia {name}"
+    return False, f"ERROR ({r.status_code}) {name}: {r.text[:150]}"
+
+
+def _coolify_list_papolo_apps() -> tuple[list[dict], str | None]:
+    if not COOLIFY_ENABLED:
+        return [], None
+    dom = _env("PAPOLO_PREVIEW_DOMAIN") or ""
+    r = requests.get(_cf_url("/api/v1/applications"), headers=_cf_headers(), timeout=30)
+    if r.status_code >= 300:
+        return [], f"ERROR coolify list ({r.status_code}): {r.text[:200]}"
+    data = r.json()
+    apps = data.get("data") if isinstance(data, dict) else data
+    out: list[dict] = []
+    for a in (apps or []):
+        uuid = a.get("uuid")
+        fqdn = a.get("fqdn") or ""
+        if uuid and dom and dom in fqdn:
+            out.append({"uuid": uuid, "name": a.get("name") or uuid, "fqdn": fqdn})
+    return out, None
+
+
+def _coolify_delete_app_admin(uuid: str) -> tuple[bool, str]:
+    if not uuid:
+        return False, "rechazado (uuid vacio)"
+    r = requests.delete(_cf_url(f"/api/v1/applications/{uuid}"),
+                        headers=_cf_headers(), timeout=30)
+    if r.status_code < 300:
+        return True, f"destruida {uuid}"
+    if r.status_code == 404:
+        return True, f"ya no existia {uuid}"
+    return False, f"ERROR ({r.status_code}) {uuid}: {r.text[:150]}"
+
+
+def _mongo_client():
+    uri = _env("PAPOLO_MONGODB_URI")
+    if not uri:
+        return None, None
+    if pymongo is None:
+        return None, "pymongo no esta instalado en el bot"
+    try:
+        return pymongo.MongoClient(uri, serverSelectionTimeoutMS=8000), None
+    except Exception as e:
+        return None, f"ERROR conectando a Mongo: {e}"
+
+
+def _mongo_list_papolo_dbs() -> tuple[list[str], str | None]:
+    cli, err = _mongo_client()
+    if err:
+        return [], err
+    if cli is None:
+        return [], None
+    try:
+        names = [n for n in cli.list_database_names() if _is_papolo_db(n)]
+        return sorted(names), None
+    except Exception as e:
+        return [], f"ERROR listando DBs Mongo: {e}"
+    finally:
+        cli.close()
+
+
+def purge_targets(known_repo_names=(), known_app_uuids=()) -> dict:
+    """Reune (SIN borrar) todo lo que Papolo creo, combinando enumeracion en vivo de
+    cada servicio con los IDs conocidos de la DB del bot. Devuelve un dict estructurado
+    listo para mostrar como preview y despues pasar tal cual a purge_execute."""
+    gh_names, gh_err = _github_list_papolo_repos()
+    gh_set = set(gh_names) | {n for n in known_repo_names if _is_papolo_repo(n)}
+
+    cf_apps, cf_err = _coolify_list_papolo_apps()
+    cf_by_uuid = {a["uuid"]: a for a in cf_apps}
+    for u in known_app_uuids:
+        if u and u not in cf_by_uuid:
+            cf_by_uuid[u] = {"uuid": u, "name": u, "fqdn": "(solo en la DB del bot)"}
+
+    mongo_dbs, mongo_err = _mongo_list_papolo_dbs()
+
+    return {
+        "github": {
+            "enabled": GITHUB_ENABLED,
+            "repos": sorted(gh_set),
+            "error": gh_err,
+        },
+        "coolify": {
+            "enabled": COOLIFY_ENABLED,
+            "apps": list(cf_by_uuid.values()),
+            "error": cf_err,
+        },
+        "mongo": {
+            "enabled": bool(_env("PAPOLO_MONGODB_URI")),
+            "dbs": mongo_dbs,
+            "error": mongo_err,
+        },
+    }
+
+
+def purge_total(targets: dict) -> int:
+    return (
+        len(targets.get("github", {}).get("repos", []))
+        + len(targets.get("coolify", {}).get("apps", []))
+        + len(targets.get("mongo", {}).get("dbs", []))
+    )
+
+
+def purge_execute(targets: dict) -> dict:
+    """Borra EXACTAMENTE los recursos listados en `targets` (el mismo dict que devolvio
+    purge_targets, para no borrar nada distinto de lo que se mostro/confirmo)."""
+    results: dict = {"github": [], "coolify": [], "mongo": [], "counts": {}}
+
+    for name in targets.get("github", {}).get("repos", []):
+        ok, msg = _github_delete_repo_admin(name)
+        results["github"].append({"target": name, "ok": ok, "msg": msg})
+
+    for app in targets.get("coolify", {}).get("apps", []):
+        ok, msg = _coolify_delete_app_admin(app.get("uuid"))
+        results["coolify"].append({"target": app.get("name") or app.get("uuid"), "ok": ok, "msg": msg})
+
+    dbs = targets.get("mongo", {}).get("dbs", [])
+    if dbs:
+        cli, err = _mongo_client()
+        if err or cli is None:
+            for db in dbs:
+                results["mongo"].append({"target": db, "ok": False, "msg": err or "sin cliente Mongo"})
+        else:
+            try:
+                for db in dbs:
+                    if not _is_papolo_db(db):
+                        results["mongo"].append({"target": db, "ok": False, "msg": "rechazado (no es DB de Papolo)"})
+                        continue
+                    try:
+                        cli.drop_database(db)
+                        results["mongo"].append({"target": db, "ok": True, "msg": f"drop {db}"})
+                    except Exception as e:
+                        results["mongo"].append({"target": db, "ok": False, "msg": str(e)[:150]})
+            finally:
+                cli.close()
+
+    for k in ("github", "coolify", "mongo"):
+        results["counts"][k] = sum(1 for x in results[k] if x["ok"])
+    return results
 
 
 # --- Schemas registrados condicionalmente ---
