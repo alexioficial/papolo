@@ -19,6 +19,17 @@ Si la app es full-stack tenes dos opciones validas — elegi una:
 
 Si vas a meter logica de negocio compleja o necesitas Python/Rust para algo especifico — opcion (b). Sino — opcion (a).
 
+## REGLA NRO 3 (no negociable) — el backend NO debe bloquear el arranque contra la DB
+Aplica a **todo** backend (Rust/Actix, Go/Fiber, FastAPI, server de SvelteKit).
+
+Coolify le hace healthcheck HTTP a la **raíz `/`** apenas arranca el container. Si tu proceso se cuelga conectando a MongoDB *antes* de escuchar en el puerto, el healthcheck falla, Coolify marca `exited:unhealthy` y **mata el container** — aunque el código esté perfecto y arranque local. Fue la causa #1 de un flail de 8 deploys en un backend Rust real.
+
+Reglas duras:
+1. **Bindeá el listener HTTP PRIMERO.** Nunca hagas un `connect().await` (ni `client.database().run_command(ping)`) a Mongo en `main()`/startup *antes* de empezar a escuchar. El server tiene que estar aceptando conexiones en segundos.
+2. **Conexión a Mongo LAZY:** inicializá el cliente on-demand en el primer request que la necesite (con un timeout corto, ~3-5s), o dejá que el pool conecte perezoso. Si igual querés conectar al arranque, hacelo en una task de fondo (`tokio::spawn` / lifespan no-bloqueante), nunca en el camino crítico del bind.
+3. **Endpoint de health en `/` que devuelva 200 SIN tocar la DB.** Además del `/api/.../health` que quieras. El de `/` es el que mira Coolify.
+4. Bindeá a `0.0.0.0` (nunca `127.0.0.1`) y leé el puerto de la env (`PORT`, default 8080/8000/3000 según stack).
+
 ## Cuando usar esta skill
 - Vas a llamar `coolify_create_app` por primera vez.
 - El usuario pide "deployalo", "subilo a coolify", "haceme un preview", etc.
@@ -142,20 +153,29 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 ### Rust (Actix / Axum)
 Reemplaza `<binary>` por el `[package].name` de `Cargo.toml`. Puerto 8080.
+
+**`libssl3` en el runtime es OBLIGATORIO** cuando el proyecto usa el crate `mongodb` (o cualquier dep con TLS por openssl): el binario linkea `libssl.so.3` dinámico y sin esa lib NO arranca (`error while loading shared libraries: libssl.so.3` → container `exited:unhealthy`). `libssl3` pesa poco y no molesta aunque uses rustls — ponelo siempre en backends Rust con Mongo.
+
 ```dockerfile
-FROM rust:1-slim AS builder
+# DEPLOY 1 — <fecha-hora exacta>   (cache buster — cambialo en cada redeploy)
+FROM rust:1-slim-bookworm AS builder
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
 COPY . .
 RUN cargo build --release
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /app/target/release/<binary> /app/server
+ENV PORT=8080 HOST=0.0.0.0 RUST_LOG=info RUST_BACKTRACE=1
 EXPOSE 8080
 CMD ["./server"]
 ```
+
+**NO uses el truco de "dummy `main.rs`" para cachear dependencias.** Es frágil: si el rebuild real con el source posta falla (o cargo no re-detecta el cambio), el `target/release/<binary>` queda siendo el binario stub `fn main(){}`, que arranca, no hace nada y sale → `exited:unhealthy` con un build sospechosamente rápido (<2 min para un release de Rust real). Si de verdad necesitás cache de deps usá `cargo-chef`; sino, `COPY . . && cargo build --release` y listo — el build tardado (5-8 min) es normal y correcto.
 
 ### Go
 Puerto 8080.
@@ -279,6 +299,9 @@ Si una tool te devolvio error 422 o similar, NO la reintentes con los mismos arg
 | `exited:unhealthy` en el PRIMER deploy, pero la app arranca local | **Casi siempre transitorio del primer build en Coolify** (healthcheck corre antes de que el container este listo). Patron observado: redeploy con el MISMO codigo queda `running`. | 1. Verifica local que arranca: `npm run build` + `timeout 6 node build` (debe decir "Listening on 3000"). 2. Si arranca local, NO es bug de codigo: bump el cache buster del Dockerfile, push, `coolify_deploy` UNA vez. 3. Suele quedar `running`. NO entres en debugging profundo si el codigo arranca local. |
 | `exited:unhealthy` que PERSISTE tras redeploy | El container si crashea — falta env var critica, conexion eager a DB, o el CMD/puerto mal | Verifica local primero. Asegurate envs seteadas y conexion **lazy** (no en module-load). Si local arranca pero deployado no, revisa que `coolify_set_mongodb_env` corrio y el puerto coincida. |
 | `running:*` pero el contenido visible NO coincide con el codigo recien pusheado | Docker cache stale — archivos compilados del build anterior | Agregar comentario unico en Dockerfile (cache buster), push, `coolify_deploy`. NO debuggees el codigo fuente. NO destruyas la app. |
+| **Backend Rust** `exited:unhealthy` de entrada | Falta `libssl3` en el runtime (el crate `mongodb` linkea openssl) → el binario ni arranca | Agregá `libssl3` al `apt-get install` del stage runtime (ver template Rust), cache buster, `coolify_deploy`. |
+| **Backend** `exited:unhealthy` que persiste y el server arranca local | Conexión eager a Mongo bloqueando el bind (REGLA NRO 3) | Hacé la conexión lazy: bindeá el HTTP primero, conectá a Mongo on-demand con timeout. Agregá health en `/`. NO destruyas la app. |
+| **Build Rust sospechosamente rápido** (<2 min) + `exited` | Truco "dummy `main.rs`" shippeó el binario stub, o Docker sirvió imagen vieja | Sacá el truco dummy (`COPY . . && cargo build --release`), cache buster único, `coolify_deploy`. Un release real tarda 5-8 min. |
 
 ## Cheat sheet
 1. Dockerfile siempre. Nunca nixpacks. Nunca docker-compose.
