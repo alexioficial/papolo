@@ -12,7 +12,7 @@ from .subagents import SUBAGENT_TOOL_SCHEMA, spawn_subagent, subagents_index_for
 from .deploy import DEPLOY_TOOL_SCHEMAS, DEPLOY_DISPATCH, deploy_index_for_prompt
 from .pipeline import PipelineTracker
 from .prompts import REASONING_PROTOCOL, PARALLEL_BUILD_PROTOCOL
-from .stackpick import ASK_TECH_STACK_SCHEMA, ask_tech_stack
+from .stackpick import ASK_TECH_STACK_SCHEMA, resolve_stack, format_stack
 
 
 MAX_PARALLEL_TOOL_CALLS = int(os.environ.get("PAPOLO_MAX_PARALLEL", "8"))
@@ -66,6 +66,7 @@ Tech stack — ELECCION DEL USUARIO (NO NEGOCIABLE):
   - Frontend: sveltekit → `sveltekit-expert` · flutter → `flutter-dart-expert` · react → `react-typescript-expert`.
   - Backend: fastapi → `fastapi-expert` · go-fiber → `golang-fiber-expert` · rust-actix → `rust-actix-expert` · sveltekit → `sveltekit-expert`.
 - Caso especial: si elige SvelteKit para frontend Y backend, es SvelteKit fullstack (adapter-node, un solo deploy, server routes + form actions directo a Mongo) — el flujo que ya conoces. Cualquier otra combinacion = frontend + backend separados = dos deploys.
+- Frontend Flutter — REGLA DURA: si el frontend elegido es Flutter, NO subas NADA del frontend a Coolify. Nunca crees una app de Coolify para el cliente Flutter, no lo deployes ni generes preview URL de el (su compilacion/deploy todavia no esta cableado). A Coolify va SOLO el backend, con su preview. El cliente Flutter queda como codigo compilable; avisale al usuario que la app se compila aparte.
 - El resultado de ask_tech_stack te dice el stack y que experto usar. Respetalo al pie de la letra.
 
 Skills criticas — cargalas OBLIGATORIAMENTE segun el contexto:
@@ -214,10 +215,11 @@ class Agent:
         if name == "load_skill":
             return skill_tool_dispatch(**args)
         if name == "ask_tech_stack":
-            result = ask_tech_stack(conversation_uuid=self.conversation_uuid)
-            # Marca inmediata: el gate del pipeline deja de exigirlo para el resto del turno.
-            self.pipeline.stack_asked = True
-            return result
+            frontend, backend, note = resolve_stack(self.conversation_uuid)
+            # Registra el stack: marca stack_asked (deja de exigirlo el gate) y setea el
+            # flag de frontend Flutter (que NO se deploya a Coolify).
+            self.pipeline.set_stack(frontend, backend)
+            return format_stack(frontend, backend, note)
         if name == "spawn_subagent":
             sub_name = args.get("name", "")
             task = args.get("task", "")

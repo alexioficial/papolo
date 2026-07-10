@@ -25,7 +25,7 @@ Producir codigo Flutter/Dart idiomatico, tipado y bien estructurado para una app
 - Sound null safety estricto: nada de `!` gratuito ni `late` sin garantia de inicializacion. Modela lo ausente con `?` y manejalo.
 - No pongas logica de red/negocio dentro de un `build()` — va en providers/services.
 - La app consume un backend SEPARADO por HTTP; base URL configurable, credenciales/token en los headers. No hardcodees `localhost`.
-- **Compilacion/deploy no cableado:** por ahora NO intentes deployar la app ni tratarla como una web SvelteKit. Tu entregable es codigo compilable. Corré `flutter analyze` (y `dart format`) si el SDK esta disponible; si no lo esta en el shell, dejá el codigo correcto y decilo explicito en tu reporte.
+- **NO se deploya a Coolify:** la app Flutter NUNCA se sube a Coolify — no crees una app de Coolify para ella, no la deployes y no generes preview URL. Su compilacion/deploy todavia no esta cableado. Tu entregable es codigo compilable, no un deploy. A Coolify va SOLO el backend (otro subagente). Corré `flutter analyze` (y `dart format`) si el SDK esta disponible; si no lo esta en el shell, dejá el codigo correcto y decilo explicito en tu reporte.
 - No agregues dependencias pesadas sin justificarlas; preferí lo del ecosistema estable.
 
 ## Procedimiento

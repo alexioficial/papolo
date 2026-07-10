@@ -83,24 +83,33 @@ def is_fullstack_sveltekit(frontend: str, backend: str) -> bool:
     return frontend == "sveltekit" and backend == "sveltekit"
 
 
-def ask_tech_stack(conversation_uuid: str | None = None, **_) -> str:
+def resolve_stack(conversation_uuid: str | None = None) -> tuple[str, str, str]:
+    """Resuelve el stack elegido. Devuelve (frontend_key, backend_key, note).
+
+    Bloquea hasta que el usuario elige (via callback del bot) o cae a un default
+    razonable si no hay canal interactivo o el callback falla. `note` trae la aclaracion
+    de default/error cuando aplica (string vacio si el usuario eligio de verdad)."""
     if _STACK_CB is None:
         # CLI / sin canal interactivo: default razonable sin bloquear.
-        return _format(
-            "sveltekit", "sveltekit",
-            note="(sin canal interactivo para preguntar — usé el default SvelteKit fullstack + MongoDB)",
+        return "sveltekit", "sveltekit", (
+            "(sin canal interactivo para preguntar — usé el default SvelteKit fullstack + MongoDB)"
         )
     try:
         frontend, backend = _STACK_CB(conversation_uuid, FRONTEND_OPTIONS, BACKEND_OPTIONS)
     except Exception as e:
-        return (
-            f"ERROR pidiendo el stack al usuario: {e}. Elegí vos un default razonable "
-            "(SvelteKit fullstack + MongoDB), avisá al usuario que lo asumiste y seguí."
+        return "sveltekit", "sveltekit", (
+            f"(ERROR pidiendo el stack: {e}; asumí SvelteKit fullstack + MongoDB — avisá al usuario)"
         )
-    return _format(frontend, backend)
+    return frontend, backend, ""
 
 
-def _format(frontend: str, backend: str, note: str = "") -> str:
+def ask_tech_stack(conversation_uuid: str | None = None, **_) -> str:
+    """Entry point de la tool: resuelve el stack y devuelve el texto para el modelo."""
+    frontend, backend, note = resolve_stack(conversation_uuid)
+    return format_stack(frontend, backend, note)
+
+
+def format_stack(frontend: str, backend: str, note: str = "") -> str:
     fe_h = _FE_LABEL.get(frontend, frontend)
     be_h = _BE_LABEL.get(backend, backend)
     lines = ["[STACK ELEGIDO POR EL USUARIO — construí SOLO con esto, no cambies de framework por preferencia propia]"]
@@ -125,9 +134,12 @@ def _format(frontend: str, backend: str, note: str = "") -> str:
         ]
         if frontend == "flutter":
             lines.append(
-                "- NOTA Flutter: por ahora solo construí el codigo del cliente con `flutter-dart-expert`. "
-                "El pipeline de compilacion/deploy de Flutter TODAVIA no está cableado — no intentes "
-                "deployarlo como una web SvelteKit. Dejá la app compilable y avisá al usuario."
+                "- NOTA Flutter (frontend) — REGLA DURA: NO subas NADA del frontend a Coolify. "
+                "No crees una app de Coolify para la app Flutter, NO la deployes y NO generes "
+                "preview URL de ella (su compilacion/deploy todavia no está cableado). A Coolify "
+                "va SOLO el backend, con su preview. Construí el cliente Flutter con "
+                "`flutter-dart-expert`, dejalo compilable, y avisale al usuario que la app "
+                "movil/web se compila aparte."
             )
         if backend == "sveltekit" and frontend != "sveltekit":
             lines.append(
