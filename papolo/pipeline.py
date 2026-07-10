@@ -46,6 +46,10 @@ class PipelineTracker:
         self.production_quality_loaded: bool = False
         self.production_check_passed: bool = False
         self.mode: str = self.MODE_CONVERSATION
+        # Tech stack: True una vez que se corrio ask_tech_stack (o se detecto que ya se
+        # corrio antes en el thread). Hasta entonces, en modo build, se bloquea spawnear
+        # planner/expertos y buildear — primero hay que preguntarle el stack al usuario.
+        self.stack_asked: bool = False
         # True si el pedido huele a tiempo real (chat, notificaciones, presencia,
         # feed live, colaboracion, multiplayer). Fuerza la skill realtime-architecture.
         self.realtime_hint: bool = False
@@ -132,6 +136,21 @@ class PipelineTracker:
 
         self.realtime_hint = self._detect_realtime(msg)
 
+    def note_prior_stack(self, messages: list) -> None:
+        """Marca stack_asked si en el historial del thread ya se llamo ask_tech_stack.
+
+        El tracker se recrea fresco cada turno, pero el stack elegido vive en los
+        mensajes persistidos. Sin esto, un mensaje de seguimiento en una tarea ya
+        iniciada re-dispararia el gate (y el pedido de re-elegir stack)."""
+        for m in messages:
+            if m.get("role") != "assistant":
+                continue
+            for tc in (m.get("tool_calls") or []):
+                fn = tc.get("function") or {}
+                if fn.get("name") == "ask_tech_stack":
+                    self.stack_asked = True
+                    return
+
     def _detect_realtime(self, msg: str) -> bool:
         """True si el pedido implica datos push (cambios de otros usuarios en vivo).
 
@@ -197,6 +216,25 @@ class PipelineTracker:
 
     def should_block(self, name: str, args: dict) -> Optional[str]:
         """Devuelve mensaje de bloqueo si la call debe bloquearse, None si pasa."""
+        # Gate de tech stack: en modo build, no se planea/construye antes de preguntarle
+        # el stack al usuario. ask_tech_stack en si nunca se bloquea (no es spawn/shell/deploy).
+        if (
+            not self.stack_asked
+            and self.mode in (self.MODE_SIMPLE_TOOL, self.MODE_FULL_SYSTEM)
+        ):
+            if name == "spawn_subagent":
+                return (
+                    "[PIPELINE] Antes de planear o construir tenes que preguntarle el stack "
+                    "al usuario. Tu primer tool_call debe ser `ask_tech_stack` (solo, sin nada "
+                    "mas): le muestra el menu de frontend/backend por reacciones y te devuelve "
+                    "su eleccion. Recien con el stack elegido spawnea el planner o los expertos."
+                )
+            if name == "coolify_deploy" or (name == "shell" and self._is_build_cmd(args)):
+                return (
+                    "[PIPELINE] Todavia no preguntaste el stack (`ask_tech_stack`). No podes "
+                    "buildear ni deployar antes de que el usuario elija frontend + backend."
+                )
+
         if name == "shell" and self._is_build_cmd(args):
             if "production-quality" not in self.skills_loaded:
                 return (

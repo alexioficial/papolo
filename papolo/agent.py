@@ -12,6 +12,7 @@ from .subagents import SUBAGENT_TOOL_SCHEMA, spawn_subagent, subagents_index_for
 from .deploy import DEPLOY_TOOL_SCHEMAS, DEPLOY_DISPATCH, deploy_index_for_prompt
 from .pipeline import PipelineTracker
 from .prompts import REASONING_PROTOCOL, PARALLEL_BUILD_PROTOCOL
+from .stackpick import ASK_TECH_STACK_SCHEMA, ask_tech_stack
 
 
 MAX_PARALLEL_TOOL_CALLS = int(os.environ.get("PAPOLO_MAX_PARALLEL", "8"))
@@ -57,6 +58,16 @@ Clasificacion de requests (LEER SIEMPRE — decision inicial):
 - **HERRAMIENTA SIMPLE**: landing page, calculadora, contador, portfolio, pagina one-shot, generador, convertidor, dashboard SIN auth ni DB persistente. Herramientas que resuelven un problema puntual sin sesion de usuario ni datos guardados. → Implementar directo. NO planner. NO system-architecture. NO ux-methodology. Cargar `professional-ui-design` (diseno profesional anti-AI-slop) y `production-quality` (checklist pre-build). Deploy simple.
 - **SISTEMA COMPLETO**: app multi-pagina con auth, login, roles, DB, CRUD, formularios con persistencia, dashboards con datos reales, sesiones de usuario. → Pipeline obligatorio completo: planner → system-architecture → professional-ui-design → ui-ux-pro-max → ux-methodology → reachability-audit → implementacion → production-quality → coolify-deploy. Si el dominio es de tiempo real (chat, notificaciones, presencia, feed live, colaboracion), sumá `realtime-architecture` antes de implementar.
 
+Tech stack — ELECCION DEL USUARIO (NO NEGOCIABLE):
+- Cuando arranca una tarea de PROGRAMACION NUEVA (HERRAMIENTA SIMPLE o SISTEMA COMPLETO) y el stack todavia NO se eligio en este thread: tu PRIMER tool_call — solo, antes del planner y antes de escribir una sola linea de codigo — es `ask_tech_stack`. Le muestra al usuario el menu de frontend + backend por reacciones y te devuelve su eleccion.
+- NO llames ask_tech_stack para: preguntas/consultas/info que no requieren programar (CONVERSACION), ni para una tarea YA iniciada (si el stack ya se eligio antes en el thread, seguí con ese — no vuelvas a preguntar).
+- La base de datos SIEMPRE es MongoDB (no se pregunta). Modela con el subagente `mongodb-expert`.
+- Construis con el subagente experto de lo que eligio el usuario, y con NINGUN otro framework:
+  - Frontend: sveltekit → `sveltekit-expert` · flutter → `flutter-dart-expert` · react → `react-typescript-expert`.
+  - Backend: fastapi → `fastapi-expert` · go-fiber → `golang-fiber-expert` · rust-actix → `rust-actix-expert` · sveltekit → `sveltekit-expert`.
+- Caso especial: si elige SvelteKit para frontend Y backend, es SvelteKit fullstack (adapter-node, un solo deploy, server routes + form actions directo a Mongo) — el flujo que ya conoces. Cualquier otra combinacion = frontend + backend separados = dos deploys.
+- El resultado de ask_tech_stack te dice el stack y que experto usar. Respetalo al pie de la letra.
+
 Skills criticas — cargalas OBLIGATORIAMENTE segun el contexto:
 - **SISTEMA COMPLETO con interfaz visual**: carga `system-architecture` (diseno arquitectonico), `professional-ui-design` (diseno UI profesional con anti-AI-slop), `ui-ux-pro-max` (diseno UI/UX profesional con 10 categorias priorizadas) y `ux-methodology` (experiencia de usuario completa). Cargalas DESPUES del planner y ANTES de implementar.
 - **HERRAMIENTA SIMPLE con UI**: carga solo `professional-ui-design` (genera DESIGN.md, sigue anti-AI-slop). NO cargues system-architecture ni ux-methodology ni ui-ux-pro-max — son overkill para tools simples.
@@ -69,7 +80,7 @@ Skills criticas — cargalas OBLIGATORIAMENTE segun el contexto:
 - Las skills existentes siguen disponibles: `code-review`, `debugging-systematic`, `git-workflow`, `writing-tests`, `refactoring-safely`, `web-search`, `search-docs`, `ui-ux-pro-max`.
 
 Planificacion (segun clasificacion):
-- **SISTEMA COMPLETO** — TU PRIMER tool_call es siempre `spawn_subagent` al `planner`. Sin excepciones. El planner tiene que cubrir: features explicitas + features implicitas obvias (auth/login si maneja usuarios o datos privados, roles/permisos si el dominio tiene cargos diferenciados ej. ventas tiene vendedor/admin/cliente, validacion server-side, manejo de errores, casos vacios, paginacion, edge cases del dominio). NO empieces a escribir codigo hasta tener el plan del planner en mano. NO improvises arquitectura.
+- **SISTEMA COMPLETO** — Si todavia no elegiste stack en el thread, tu PRIMER tool_call es `ask_tech_stack`; recien con el stack en mano, tu siguiente tool_call es `spawn_subagent` al `planner`. Sin excepciones. El planner tiene que cubrir: features explicitas + features implicitas obvias (auth/login si maneja usuarios o datos privados, roles/permisos si el dominio tiene cargos diferenciados ej. ventas tiene vendedor/admin/cliente, validacion server-side, manejo de errores, casos vacios, paginacion, edge cases del dominio). NO empieces a escribir codigo hasta tener el plan del planner en mano. NO improvises arquitectura.
 - **HERRAMIENTA SIMPLE** — No necesitas planner. Arranca directo cargando `professional-ui-design`, genera DESIGN.md rapido, implementa, corre `production-quality`, deploya.
 - **CONVERSACION / INFO** — No uses herramientas de codigo ni skills de diseno. Solo responde. Si necesita buscar en internet, usa `web-search`.
 
@@ -150,7 +161,13 @@ class Agent:
         self._cancel.set()
 
     def all_tools(self):
-        return TOOL_SCHEMAS + [SKILL_TOOL_SCHEMA, SUBAGENT_TOOL_SCHEMA] + DEPLOY_TOOL_SCHEMAS
+        # ask_tech_stack es SOLO del orquestador (no de los subagentes): quien decide y
+        # pregunta el stack es el agente principal, una vez, al arrancar la tarea.
+        return (
+            TOOL_SCHEMAS
+            + [SKILL_TOOL_SCHEMA, SUBAGENT_TOOL_SCHEMA, ASK_TECH_STACK_SCHEMA]
+            + DEPLOY_TOOL_SCHEMAS
+        )
 
     def _loop_nudge(self, name: str, raw_args: str, result_str: str) -> str:
         """Si esta misma tool con estos mismos args ya fallo antes, agrega un nudge.
@@ -196,6 +213,11 @@ class Agent:
 
         if name == "load_skill":
             return skill_tool_dispatch(**args)
+        if name == "ask_tech_stack":
+            result = ask_tech_stack(conversation_uuid=self.conversation_uuid)
+            # Marca inmediata: el gate del pipeline deja de exigirlo para el resto del turno.
+            self.pipeline.stack_asked = True
+            return result
         if name == "spawn_subagent":
             sub_name = args.get("name", "")
             task = args.get("task", "")
@@ -249,6 +271,10 @@ class Agent:
     def send(self, user_message: str, on_event=None) -> str:
         self.messages.append({"role": "user", "content": user_message})
         self.pipeline.detect_project_type(user_message)
+        # El PipelineTracker se recrea fresco cada turno (bot crea un Agent nuevo por
+        # mensaje), pero el historial persiste. Si en este thread ya se pregunto el stack,
+        # marcarlo: es una tarea YA iniciada, no hay que re-preguntar ni volver a bloquear.
+        self.pipeline.note_prior_stack(self.messages)
 
         # Sin tope duro de iteraciones. Lo unico que depende del scope es CUANDO arranca
         # la reflexion anti-bucle: mas tarde para un build (a iter 20 todavia scaffoldea)
