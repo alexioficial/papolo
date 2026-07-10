@@ -2,6 +2,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
+import uuid
 import yaml
 
 from .deepseek import get_client, model_name
@@ -92,10 +93,15 @@ def spawn_subagent(
     if max_iters is None:
         max_iters = int(os.environ.get("PAPOLO_SUBAGENT_MAX_ITERS", "0"))
 
+    # Id unico de ESTA instancia de subagente. Va en todos sus eventos para que la UI
+    # (embeds del bot) pueda seguir a cada worker por separado aunque dos corran con el
+    # MISMO nombre en paralelo (ej. dos sveltekit-expert para modulos distintos).
+    sub_id = uuid.uuid4().hex[:8]
+
     def emit(kind: str, payload: dict) -> None:
         if on_event is None:
             return
-        on_event(kind, {**payload, "subagent": name, "depth": depth})
+        on_event(kind, {**payload, "subagent": name, "sub_id": sub_id, "depth": depth})
 
     emit("subagent_start", {"task": task})
     if depth > MAX_SUBAGENT_DEPTH:
