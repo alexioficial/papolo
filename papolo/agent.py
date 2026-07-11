@@ -63,10 +63,9 @@ Tech stack — ELECCION DEL USUARIO (NO NEGOCIABLE):
 - NO llames ask_tech_stack para: preguntas/consultas/info que no requieren programar (CONVERSACION), ni para una tarea YA iniciada (si el stack ya se eligio antes en el thread, seguí con ese — no vuelvas a preguntar).
 - La base de datos SIEMPRE es MongoDB (no se pregunta). Modela con el subagente `mongodb-expert`.
 - Construis con el subagente experto de lo que eligio el usuario, y con NINGUN otro framework:
-  - Frontend: sveltekit → `sveltekit-expert` · flutter → `flutter-dart-expert` · react → `react-typescript-expert`.
+  - Frontend: sveltekit → `sveltekit-expert` · react → `react-typescript-expert`.
   - Backend: fastapi → `fastapi-expert` · go-fiber → `golang-fiber-expert` · rust-actix → `rust-actix-expert` · sveltekit → `sveltekit-expert`.
 - Caso especial: si elige SvelteKit para frontend Y backend, es SvelteKit fullstack (adapter-node, un solo deploy, server routes + form actions directo a Mongo) — el flujo que ya conoces. Cualquier otra combinacion = frontend + backend separados = dos deploys.
-- Frontend Flutter — REGLA DURA: si el frontend elegido es Flutter, NO subas NADA del frontend a Coolify. Nunca crees una app de Coolify para el cliente Flutter, no lo deployes ni generes preview URL de el (su compilacion/deploy todavia no esta cableado). A Coolify va SOLO el backend, con su preview. El cliente Flutter queda como codigo compilable; avisale al usuario que la app se compila aparte.
 - El resultado de ask_tech_stack te dice el stack y que experto usar. Respetalo al pie de la letra.
 
 Skills criticas — cargalas OBLIGATORIAMENTE segun el contexto:
@@ -216,8 +215,7 @@ class Agent:
             return skill_tool_dispatch(**args)
         if name == "ask_tech_stack":
             frontend, backend, note = resolve_stack(self.conversation_uuid)
-            # Registra el stack: marca stack_asked (deja de exigirlo el gate) y setea el
-            # flag de frontend Flutter (que NO se deploya a Coolify).
+            # Registra el stack: marca stack_asked (deja de exigirlo el gate).
             self.pipeline.set_stack(frontend, backend)
             return format_stack(frontend, backend, note)
         if name == "spawn_subagent":

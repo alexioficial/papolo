@@ -50,9 +50,6 @@ class PipelineTracker:
         # corrio antes en el thread). Hasta entonces, en modo build, se bloquea spawnear
         # planner/expertos y buildear — primero hay que preguntarle el stack al usuario.
         self.stack_asked: bool = False
-        # True si el frontend elegido es Flutter: su compilacion/deploy no esta cableado,
-        # asi que el frontend NO se sube a Coolify (sin preview) — solo el backend se deploya.
-        self.flutter_frontend: bool = False
         # True si el pedido huele a tiempo real (chat, notificaciones, presencia,
         # feed live, colaboracion, multiplayer). Fuerza la skill realtime-architecture.
         self.realtime_hint: bool = False
@@ -140,18 +137,15 @@ class PipelineTracker:
         self.realtime_hint = self._detect_realtime(msg)
 
     def set_stack(self, frontend: str, backend: str) -> None:
-        """Registra el stack elegido. Marca stack_asked y el flag de frontend Flutter."""
+        """Registra el stack elegido. Marca stack_asked."""
         self.stack_asked = True
-        self.flutter_frontend = (frontend == "flutter")
 
     def note_prior_stack(self, messages: list) -> None:
-        """Marca stack_asked (y flutter_frontend) si ya se llamo ask_tech_stack en el thread.
+        """Marca stack_asked si ya se llamo ask_tech_stack en el thread.
 
         El tracker se recrea fresco cada turno, pero el stack elegido vive en los
         mensajes persistidos. Sin esto, un mensaje de seguimiento en una tarea ya
-        iniciada re-dispararia el gate (y el pedido de re-elegir stack), y se perderia
-        el flag de Flutter que evita subir el frontend a Coolify."""
-        ask_ids: set[str] = set()
+        iniciada re-dispararia el gate (y el pedido de re-elegir stack)."""
         for m in messages:
             if m.get("role") != "assistant":
                 continue
@@ -159,19 +153,7 @@ class PipelineTracker:
                 fn = tc.get("function") or {}
                 if fn.get("name") == "ask_tech_stack":
                     self.stack_asked = True
-                    if tc.get("id"):
-                        ask_ids.add(tc["id"])
-        # El resultado de ask_tech_stack (tool message) menciona `flutter-dart-expert`
-        # cuando el frontend elegido fue Flutter — de ahi recuperamos el flag.
-        if ask_ids:
-            for m in messages:
-                if (
-                    m.get("role") == "tool"
-                    and m.get("tool_call_id") in ask_ids
-                    and "flutter-dart-expert" in str(m.get("content", ""))
-                ):
-                    self.flutter_frontend = True
-                    break
+                    return
 
     def _detect_realtime(self, msg: str) -> bool:
         """True si el pedido implica datos push (cambios de otros usuarios en vivo).
@@ -393,11 +375,6 @@ class PipelineTracker:
             parts.append("- ULTIMO DEPLOY: FALLIDO (unhealthy) - diagnosticar antes de reintentar")
         if self.deploy_happened and not self.browser_tested:
             parts.append("- Smoke test de navegador: PENDIENTE (corré agent-browser antes de done)")
-        if self.flutter_frontend:
-            parts.append(
-                "- Frontend Flutter: NO se sube a Coolify (sin app ni preview del frontend); "
-                "solo el backend se deploya."
-            )
         parts.append(f"- Modo: {self.mode}")
         return "\n".join(parts)
 

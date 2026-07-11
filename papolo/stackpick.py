@@ -18,7 +18,6 @@ no romper el flujo.
 # Opciones que se le ofrecen al usuario. (key interno, etiqueta humana).
 FRONTEND_OPTIONS = [
     ("sveltekit", "SvelteKit"),
-    ("flutter", "Flutter + Dart"),
     ("react", "React + TypeScript"),
 ]
 BACKEND_OPTIONS = [
@@ -31,7 +30,6 @@ BACKEND_OPTIONS = [
 # key -> subagente experto que construye esa capa.
 FRONTEND_EXPERT = {
     "sveltekit": "sveltekit-expert",
-    "flutter": "flutter-dart-expert",
     "react": "react-typescript-expert",
 }
 BACKEND_EXPERT = {
@@ -132,15 +130,6 @@ def format_stack(frontend: str, backend: str, note: str = "") -> str:
             "- Base de datos: MongoDB (siempre), conectada SOLO desde el backend. Modelado con `mongodb-expert`.",
             "- El frontend consume la API del backend por HTTP (configurá CORS + credenciales bien). NUNCA bundlees el frontend adentro del backend.",
         ]
-        if frontend == "flutter":
-            lines.append(
-                "- NOTA Flutter (frontend) — REGLA DURA: NO subas NADA del frontend a Coolify. "
-                "No crees una app de Coolify para la app Flutter, NO la deployes y NO generes "
-                "preview URL de ella (su compilacion/deploy todavia no está cableado). A Coolify "
-                "va SOLO el backend, con su preview. Construí el cliente Flutter con "
-                "`flutter-dart-expert`, dejalo compilable, y avisale al usuario que la app "
-                "movil/web se compila aparte."
-            )
         if backend == "sveltekit" and frontend != "sveltekit":
             lines.append(
                 "- NOTA: elegiste SvelteKit como backend con otro frontend. Usá `sveltekit-expert` para "
